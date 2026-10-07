@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Climate Forge: shape a terrestrial planet's climate and run it through billions of years.">
+  <title>Climate Forge</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <noscript><p class="fatal">Climate Forge needs JavaScript to run.</p></noscript>
+
+  <header class="masthead">
+    <h1>Climate Forge</h1>
+    <p class="lede">Shape a terrestrial planet's climate, then run it forward from one year per second to one gigayear per second. Pick a preset, change the planet, and press play.</p>
+  </header>
+
+  <p id="error" class="fatal" role="alert" hidden></p>
+
+  <div class="layout">
+    <div class="stage">
+      <figure class="card card--planet">
+        <div class="plot plot--planet">
+          <canvas id="planet-canvas" role="img" aria-label="Planet view"></canvas>
+        </div>
+        <figcaption>The star sits at upper left. Surface, clouds and halo follow simulated time, so they pause with the clock.</figcaption>
+      </figure>
+
+      <section id="hud" class="card hud" aria-labelledby="hud-title">
+        <h2 id="hud-title">Climate state</h2>
+        <p class="state__name" data-field="stateName">Starting</p>
+        <p class="state__summary" data-field="stateSummary"></p>
+        <p class="note" data-field="note" role="status" aria-live="polite"></p>
+        <ul class="badges" data-field="badges"></ul>
+
+        <dl class="readouts">
+          <div><dt>Surface temperature</dt><dd data-field="ts"></dd></div>
+          <div><dt>Surface pressure</dt><dd data-field="pressure"></dd></div>
+          <div><dt>Carbon dioxide</dt><dd data-field="co2"></dd></div>
+          <div><dt>Liquid ocean</dt><dd data-field="ocean"></dd></div>
+          <div><dt>Sea ice</dt><dd data-field="ice"></dd></div>
+          <div><dt>Albedo</dt><dd data-field="albedo"></dd></div>
+          <div><dt>Absorbed sunlight</dt><dd data-field="absorbed"></dd></div>
+          <div><dt>Outgoing infrared (OLR)</dt><dd data-field="olr"></dd></div>
+          <div><dt>Net flux (positive warms)</dt><dd data-field="net"></dd></div>
+          <div><dt>Hydrogen escape time</dt><dd data-field="escape"></dd></div>
+        </dl>
+
+        <h3 class="lags__title">Reservoir lag</h3>
+        <p class="lags__help">How far each slow reservoir is from the equilibrium the present conditions would give.</p>
+        <ul class="lags">
+          <li>
+            <div class="lag__head"><span>Mixed layer, about 10 yr</span><span class="lag__status" data-lag-status="mixedLayer"></span></div>
+            <div class="meter" role="meter" data-lag="mixedLayer" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0" aria-label="Mixed layer lag"><span class="meter__fill"></span></div>
+          </li>
+          <li>
+            <div class="lag__head"><span>Deep ocean, about 300 yr</span><span class="lag__status" data-lag-status="deepOcean"></span></div>
+            <div class="meter" role="meter" data-lag="deepOcean" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0" aria-label="Deep ocean lag"><span class="meter__fill"></span></div>
+          </li>
+          <li>
+            <div class="lag__head"><span>Sea ice, about 100 yr</span><span class="lag__status" data-lag-status="iceCover"></span></div>
+            <div class="meter" role="meter" data-lag="iceCover" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0" aria-label="Sea ice lag"><span class="meter__fill"></span></div>
+          </li>
+          <li>
+            <div class="lag__head"><span>Carbonate cycle, about 240 kyr</span><span class="lag__status" data-lag-status="carbonate"></span></div>
+            <div class="meter" role="meter" data-lag="carbonate" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0" aria-label="Carbonate cycle lag"><span class="meter__fill"></span></div>
+          </li>
+          <li>
+            <div class="lag__head"><span>Water loss by evaporation</span><span class="lag__status" data-lag-status="waterLoss"></span></div>
+            <div class="meter" role="meter" data-lag="waterLoss" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0" aria-label="Water loss lag"><span class="meter__fill"></span></div>
+          </li>
+        </ul>
+      </section>
+
+      <figure class="card">
+        <div class="plot plot--energy">
+          <canvas id="energy-canvas" role="img" aria-label="Energy balance: outgoing infrared against surface temperature"></canvas>
+        </div>
+        <figcaption>Energy balance. The curve is the infrared the planet can emit at each surface temperature. Where it crosses the dashed absorbed-sunlight line, the planet is in equilibrium.</figcaption>
+      </figure>
+
+      <figure class="card">
+        <div class="plot plot--series">
+          <canvas id="series-canvas" role="img" aria-label="History of surface temperature, ocean depth, CO2 and sea ice"></canvas>
+        </div>
+        <figcaption>History since the run started. Points are kept at even intervals of simulated time, so the whole run stays on screen.</figcaption>
+      </figure>
+    </div>
+
+    <aside class="side">
+      <details id="drawer" class="card drawer" open>
+        <summary>Controls</summary>
+        <div id="controls"></div>
+      </details>
+
+      <details id="help" class="card help">
+        <summary>Keys and glossary</summary>
+
+        <h3>Keys</h3>
+        <table class="keys">
+          <tbody>
+            <tr><th scope="row"><kbd>Space</kbd></th><td>Pause or play</td></tr>
+            <tr><th scope="row"><kbd>-</kbd> / <kbd>+</kbd></th><td>Slower or faster, one speed step at a time</td></tr>
+            <tr><th scope="row"><kbd>R</kbd></th><td>Reset to the start of the current settings</td></tr>
+            <tr><th scope="row"><kbd>1</kbd> to <kbd>9</kbd></th><td>Choose a preset</td></tr>
+            <tr><th scope="row"><kbd>H</kbd></th><td>Show or hide this help</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Glossary</h3>
+        <dl class="glossary">
+          <dt>Absorbed sunlight</dt>
+          <dd>The starlight the planet keeps: (1 minus albedo) times the star's flux, divided by four. Measured in W m<sup>-2</sup>.</dd>
+          <dt>Albedo</dt>
+          <dd>The share of sunlight reflected back to space by clouds, ice and the surface. A bright planet absorbs less and stays cooler.</dd>
+          <dt>Cap (moist limit)</dt>
+          <dd>The most infrared a moist atmosphere can radiate, about 282 W m<sup>-2</sup> in clear-sky models. If more sunlight is absorbed than this, no equilibrium with liquid water exists.</dd>
+          <dt>Greenhouse effect</dt>
+          <dd>Gases that absorb infrared send some of it back down, so the surface must be warmer to radiate the same energy to space.</dd>
+          <dt>Hysteresis</dt>
+          <dd>The state depends on the path taken. A snowball that has formed may need more CO2 or more sunlight to thaw than it took to freeze over.</dd>
+          <dt>Lag</dt>
+          <dd>How far a slow reservoir, such as the deep ocean or the carbonate cycle, is from the equilibrium the present conditions would give. A settled reservoir has caught up.</dd>
+          <dt>Moist greenhouse</dt>
+          <dd>A liquid ocean with enough water vapour high in the air for hydrogen to escape. The ocean drains over about a billion years.</dd>
+          <dt>OLR (outgoing longwave radiation)</dt>
+          <dd>Infrared the planet radiates to space, in W m<sup>-2</sup>. At equilibrium it balances absorbed sunlight.</dd>
+          <dt>OED (ocean-equivalent depth)</dt>
+          <dd>All the water spread evenly over the whole planet, as a depth. Earth's ocean is about 2.7 km deep in this sense.</dd>
+          <dt>Runaway</dt>
+          <dd>Absorbed sunlight exceeds the cap. The ocean evaporates, and the surface temperature stalls while the surplus energy is spent on evaporation.</dd>
+          <dt>Snowball, slushball, eyeball</dt>
+          <dd>Frozen states. A snowball is ice over the whole ocean. A slushball has an open tropical band. An eyeball has a small open equatorial sea between polar ice caps.</dd>
+          <dt>Stellar flux S</dt>
+          <dd>Starlight at the planet relative to present Earth (S = 1). Brightening means S rises as the star ages.</dd>
+          <dt>Weathering</dt>
+          <dd>Rock weathering removes CO2 from the air and speeds up when the planet is warmer. It is a slow thermostat, on a timescale of about 240 kyr.</dd>
+        </dl>
+        <p class="fine">This is a zero-dimensional model. It has no latitude structure and no cloud feedback. Read the caveats in the README before quoting numbers.</p>
+      </details>
+    </aside>
+  </div>
+
+  <script src="js/model.js"></script>
+  <script src="js/render.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
