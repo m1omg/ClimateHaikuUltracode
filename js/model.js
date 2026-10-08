@@ -22,11 +22,12 @@ const ClimateModel = (function () {
   const CRITICAL_T = 647.1;          // K, critical point of water
   const BAR_PER_M_WATER = 0.0981;    // bar per metre of water column at Earth gravity
   const EVAP_J_PER_M = 3.96e9;       // J m^-2 per metre of ocean (latent + sensible)
+  const LATENT_J_PER_M = 2.5e9;      // J m^-2 per metre of water condensed (latent part of EVAP_J_PER_M)
   const P_CO2_REF = 4.2e-4;          // bar, present-Earth CO2 (weathering reference)
   const FOUT_BAR_PER_YR = 58e-9;     // 7 Tmol C/yr expressed as bar of CO2 per year
   const WEATHER_EXP = 0.3;           // exponent on pCO2 in the weathering law
   const WEATHER_E_K = 13.7;          // K, e-folding temperature of weathering
-  const LAND_REF = 0.29;             // present land fraction (weathering scale)
+  const LAND_SAT = 0.01;             // land fraction at which weathering saturates (Abbot et al. 2012)
   const TAU_MIX_YR = 10;             // mixed-layer time constant
   const TAU_DEEP_YR = 300;           // deep-ocean exchange time constant
   const TAU_ICE_YR = 100;            // sea-ice relaxation time
@@ -61,9 +62,12 @@ const ClimateModel = (function () {
   const N2_K = 0.1;                  // optical depth per bar of N2 + O2 (pressure broadening)
   const CH4_K = 3.6e-4;              // optical depth per sqrt(ppb) of CH4
   const H2_K = 5.0;                  // optical depth per bar^2 of H2 (collision-induced)
-  const WATER_A = 2.51;              // water optical depth, sub-linear term
+  const WATER_A = 2.51;              // water optical depth, sub-linear term (bar^-0.3)
   const WATER_EXP = 0.3;             // exponent of the sub-linear water term
-  const WATER_B = 0.02;              // water optical depth per bar^2, quadratic term (steam regime)
+  const WATER_P_KNEE = 0.01;         // bar, over liquid the water term steepens above this vapour pressure (Earth is 0.0096)
+  const WATER_EXP_HI = 0.47;         // exponent above the knee, over liquid (MODEL.md 2.3)
+  const WATER_P_LIQ = 0.1;           // bar, over liquid the water opacity is held at its 0.1 bar value (about 330 K for Earth)
+  const WATER_B = 0.02;              // water optical depth per bar^2, quadratic term (steam without liquid)
   const WATER_P_SAT = 300;           // bar, saturation pressure of the water optical depth
 
   // ---- Stellar flux and luminosity ---------------------------------------
@@ -120,15 +124,32 @@ const ClimateModel = (function () {
   // ---- Grey optical depth ------------------------------------------------
   // Total grey optical depth tau for the partial pressures p (bar) and the
   // water vapour pressure pH2O (bar). See MODEL.md for each term's basis.
-  function greyTau(p, pH2O) {
+  function greyTau(p, pH2O, pVap, liquid) {
     const co2 = CO2_LOG_A * Math.log(1 + p.co2 / CO2_LOG_PC)
       + CO2_DENSE_C * Math.sqrt(p.co2) * p.co2 / (p.co2 + CO2_DENSE_PS);
     const broadening = N2_K * (p.n2 + p.o2);
     const ch4 = CH4_K * Math.sqrt(Math.max(p.ch4, 0) * 1e9);
     const h2 = H2_K * p.h2 * p.h2;
     // Water opacity saturates above WATER_P_SAT so that very deep steam stays below about 1700 K.
+    // Over liquid the vapour follows saturation, so its opacity is sub-linear and held
+    // fixed above WATER_P_LIQ: a p^2 term, or a steep power, would make OLR fall with
+    // temperature (MODEL.md 2.3, deviation 16). Steam without liquid has a
+    // temperature-independent pressure and keeps the p^2 term.
     const pw = Math.min(pH2O, WATER_P_SAT);
-    const water = WATER_A * Math.pow(pw, WATER_EXP) + WATER_B * pw * pw;
+    let water;
+    if (liquid) {
+      // Saturated near-surface vapour (held fixed above WATER_P_LIQ), plus the vapour
+      // column left by evaporation, which does not depend on temperature for a given
+      // state and keeps its steam-branch opacity.
+      const pl = Math.min(pw, WATER_P_LIQ);
+      const sat = pl <= WATER_P_KNEE
+        ? WATER_A * Math.pow(pl, WATER_EXP)
+        : WATER_A * Math.pow(WATER_P_KNEE, WATER_EXP) * Math.pow(pl / WATER_P_KNEE, WATER_EXP_HI);
+      const col = Math.min(Math.max(pVap, 0), WATER_P_SAT);
+      water = sat + (col > 0 ? WATER_A * Math.pow(col, WATER_EXP) + WATER_B * col * col : 0);
+    } else {
+      water = WATER_A * Math.pow(pw, WATER_EXP) + WATER_B * pw * pw;
+    }
     return co2 + broadening + ch4 + h2 + water;
   }
 
@@ -140,7 +161,9 @@ const ClimateModel = (function () {
       o2: Math.max(s.o2Bar, 0) * gf, h2: Math.max(s.h2Bar, 0) * gf
     };
     const pH2O = vapourBar(s, c, geo, TK, liquid);
-    const tau = greyTau(p, pH2O);
+    // Vapour column from evaporated water (inventory minus liquid), in bar.
+    const pVap = liquid ? Math.max(s.waterOED - s.oceanDepthM, 0) * BAR_PER_M_WATER * gf : pH2O;
+    const tau = greyTau(p, pH2O, pVap, liquid);
     const pTot = p.co2 + p.ch4 + p.n2 + p.o2 + p.h2 + pH2O;
     return { p: p, pH2O: pH2O, tau: tau, pTot: pTot };
   }
@@ -302,6 +325,46 @@ const ClimateModel = (function () {
     return { Ts: Ts, Td: res.Td, evap: evap, net: net };
   }
 
+  // Condensation (MODEL.md 2.9). Vapour above the saturation pressure at the
+  // surface temperature condenses into the ocean. Condensation releases latent
+  // heat, which warms the surface through the ocean heat capacity, so the
+  // condensate m and the new temperature satisfy
+  //   p_vap - m * bg = e_s(Ts + dT(m)),   dT(m) = m * LATENT / (C_MIX + WATER_HEAT * (L + m))
+  // (bg is bar per metre of water column). The left side falls and the right side
+  // rises with m, so bisection finds the single root. Above the critical point no
+  // condensation occurs. A root above CRITICAL_T is capped there, and the rest of
+  // the vapour stays in the air. Water moves between vapour and liquid only, so
+  // the inventory is unchanged. Returns the condensed depth (m).
+  function condense(s, c, geo) {
+    if (!(s.Ts < CRITICAL_T)) return 0;
+    const liquidBefore = s.oceanDepthM > 0;
+    const p = vapourBar(s, c, geo, s.Ts, liquidBefore);
+    const e = satVapourBar(s.Ts);
+    const bg = BAR_PER_M_WATER * geo.gf;
+    const excess = p - e;
+    if (!(excess > 0) || !(bg > 0)) return 0;
+    const L0 = s.oceanDepthM;
+    const dT = (m) => m * LATENT_J_PER_M / (C_MIX + WATER_HEAT_PER_M * (L0 + m));
+    let a = 0;
+    let b = excess / bg;
+    for (let k = 0; k < 60; k++) {
+      const m = 0.5 * (a + b);
+      if ((p - m * bg) - satVapourBar(s.Ts + dT(m)) > 0) a = m; else b = m;
+    }
+    let m = 0.5 * (a + b);
+    const room = CRITICAL_T - s.Ts;
+    if (s.Ts + dT(m) > CRITICAL_T) {
+      // Largest condensate that keeps the surface at or below the critical point.
+      const denom = LATENT_J_PER_M - WATER_HEAT_PER_M * room;
+      m = denom > 0 ? Math.min(m, room * (C_MIX + WATER_HEAT_PER_M * L0) / denom) : 0;
+    }
+    if (!(m > 0)) return 0;
+    s.Ts = Math.min(s.Ts + dT(m), CRITICAL_T);
+    s.oceanDepthM = L0 + m;
+    if (!liquidBefore) s.iceFraction = iceEquilibrium(s.Ts);
+    return m;
+  }
+
   // One internal step of at most h0 years. The step is halved while either
   // (a) the predicted surface change exceeds MAX_DT_K, so the linear solve is
   // only used over changes it can represent, or (b) evaporation would remove
@@ -331,24 +394,30 @@ const ClimateModel = (function () {
     let L = Math.max(0, s.oceanDepthM - th.evap * h * YEAR_S / EVAP_J_PER_M);
     const f = stratFraction(s.Ts);
     const ratio = Math.exp(-h * f / (TAU_H2O_LOSS_REF_YR * F_STRAT_REF));
+    const waterBefore = s.waterOED;
     s.waterOED = Math.max(0, s.waterOED * ratio);
+    s.escapedOED = (s.escapedOED || 0) + (waterBefore - s.waterOED);
     L = Math.min(L * ratio, s.waterOED);
     s.oceanDepthM = L;
+    // Vapour above saturation condenses back into the ocean (see condense).
+    const condensedM = condense(s, c, geo);
 
     s.h2Bar *= Math.exp(-h / TAU_H2_YR);
-    const dCO2 = co2Step(s, c, geo, h, liquidBefore || L > 0);
+    const dCO2 = co2Step(s, c, geo, h, liquidBefore || s.oceanDepthM > 0);
     s.tYears += h;
-    s.last = { netWm2: th.net, evapWm2: th.evap, carbonRatio: dCO2.ratio };
+    s.last = { netWm2: th.net, evapWm2: th.evap, carbonRatio: dCO2.ratio, condensedM: condensedM };
     return h;
   }
 
-  // Weathering factor (dimensionless): land area, the weathering-strength
-  // multiplier and exp((Ts - 288)/13.7). Ts is held at WEATHER_T_MAX above that
-  // temperature, because the fit is not calibrated higher (MODEL.md 2.11).
-  // Zero without liquid water.
+  // Weathering factor (dimensionless): land factor, the weathering-strength
+  // multiplier and exp((Ts - 288)/13.7). The land factor is min(1, land/0.01),
+  // so weathering saturates above 1% land (Abbot et al. 2012). Earth's land
+  // factor is 1, so the Earth carbon balance is the same as before the change.
+  // Ts is held at WEATHER_T_MAX above that temperature, because the fit is not
+  // calibrated higher (MODEL.md 2.11). Zero without liquid water.
   function weatheringFactor(s, c, wet) {
     if (!wet) return 0;
-    const landF = clamp(c.landFraction / LAND_REF, 0, 3);
+    const landF = Math.min(1, Math.max(c.landFraction, 0) / LAND_SAT);
     const tEff = Math.min(s.Ts, WEATHER_T_MAX);
     const tFac = Math.exp(clamp((tEff - 288) / WEATHER_E_K, -50, 50));
     return landF * c.weatheringFactor * tFac;
@@ -455,6 +524,7 @@ const ClimateModel = (function () {
         v = Math.max(v, 0);
         config.waterOED_m = v;
         state.waterOED = v;
+        state.escapedOED = 0; // the water ledger restarts from the new inventory
         state.oceanDepthM = (config.landFraction < 1 && state.Ts < CRITICAL_T) ? v : 0;
       }
     });
@@ -505,8 +575,8 @@ const ClimateModel = (function () {
     const base = {
       tYears: 0,
       co2Bar: c.co2Bar, ch4Bar: c.ch4Bar, n2Bar: c.n2Bar, o2Bar: c.o2Bar, h2Bar: c.h2Bar,
-      waterOED: c.waterOED_m, oceanDepthM: wetPossible ? c.waterOED_m : 0,
-      Ts: 288, Td: 288, iceFraction: 0, last: { netWm2: 0, evapWm2: 0, carbonRatio: 1 }
+      waterOED: c.waterOED_m, oceanDepthM: wetPossible ? c.waterOED_m : 0, escapedOED: 0,
+      Ts: 288, Td: 288, iceFraction: 0, last: { netWm2: 0, evapWm2: 0, carbonRatio: 1, condensedM: 0 }
     };
     let Ts0;
     let liquid = false;
@@ -764,7 +834,10 @@ const ClimateModel = (function () {
     diagnose: diagnose,
     classify: classify,
     energyCurve: energyCurve,
-    luminosityRelative: luminosityRelative
+    luminosityRelative: luminosityRelative,
+    // Pure accessors for tests and diagnostics.
+    satVapourBar: satVapourBar,
+    weatheringFactorAt: function (config, TK, wet) { return weatheringFactor({ Ts: TK }, config, wet); }
   };
   return api;
 })();
