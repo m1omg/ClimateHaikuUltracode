@@ -306,7 +306,7 @@ const ClimateRender = (function () {
     // draws radial spokes. Blend each polar row toward its longitudinal mean.
     for (let j = 0; j < TEX_H; j++) {
       const cosLat = Math.cos((0.5 - (j + 0.5) / TEX_H) * Math.PI);
-      const w = clamp(1 - cosLat / 0.35, 0, 1);
+      const w = 1 - smooth(0.35, 0.7, cosLat);
       if (w <= 0) continue;
       const mean = [m.SR, m.SG, m.SB, m.OC, m.ER, m.EG, m.EB].map(function (arr) {
         let sum = 0;

@@ -29,21 +29,26 @@ the planet has moved.
 - **Keys**: space pauses, `-` and `+` change speed, `R` resets, `1` to `9` pick
   presets, `H` opens the help and glossary.
 
-On a phone the controls sit in a drawer below the readouts. It starts closed.
+On a phone the controls come straight after the planet, in a drawer that starts
+closed, so the clock is one tap below the planet.
 
 ## How the clock runs in the page
 
 Simulated time moves only through `ClimateModel.Clock.advance`. Each frame's
-wall-clock time is clamped to 0.25 s and added to a short debt. The debt is
-spent in slices of at most 2 ms of wall time, and each slice ends exactly on the
-next history sample time, so the trajectory does not depend on the frame rate.
-Samples are kept on a simulated-time grid, and the grid doubles when the buffer
-(600 samples) is full. Unspent debt is capped at 0.1 s. Each frame may spend
-about 12 ms on the model. At the top speed a slow device can run below the
-selected speed. The clock readout then says what share of the speed is running.
-Animation is driven by simulated time (spin, cloud drift) and by a fixed
-30-per-second tick for twinkling. Reduced motion slows spin and drift to a fifth
-and turns off twinkling. It does not change the physics.
+wall-clock time is clamped to 0.25 s, so a stall does not make time catch up.
+That time is spent in slices of at most 2 ms of wall time, and each slice ends
+exactly on the next history sample time, so the trajectory does not depend on
+the frame rate. Each frame may spend about 12 ms on the model. Wall time that
+the budget does not cover in a frame is dropped. On a slow device the clock then
+runs below the selected speed, and the readout says what share is running.
+Time already passed to the clock is kept when the speed changes.
+
+History samples sit on a simulated-time grid, and the grid doubles when the
+buffer (600 samples) is full. Spin and cloud drift follow the continuous
+simulated time. At very high speeds the planet turns many times between frames,
+so its spin shows as aliasing; the phase is still exact simulated time. A
+fixed 30-per-second tick drives twinkling. Reduced motion slows spin and drift
+to a fifth and turns off twinkling. It does not change the physics.
 
 ## Running the tests
 
@@ -51,9 +56,9 @@ Requires Node.js. There are no dependencies.
 
     npm test
 
-This runs `node --test tests/*.test.js`. On Node 22 the form `node --test tests/`
-does not find the test files, so the glob is used. The physics tests are in
-`tests/model.test.js`.
+This runs `node --test tests/*.test.js`. `node --test tests/` runs the same tests:
+on Node 22 a directory argument is read as a module path, so `tests/index.js`
+loads the suite. The physics tests are in `tests/model.test.js`.
 
 ## Physics
 
@@ -69,10 +74,21 @@ slowly in a moist atmosphere, on Gyr timescales.
 Caveats:
 
 - The model has no latitude structure and no heat transport. Cloud feedback is not represented.
+- Water vapour does not condense back into the ocean. A planet that has lost water
+  to the air keeps it when it cools, and dry steam persists. This is the largest
+  known gap (`docs/MODEL.md`, section 7, deviation 15).
+- Above about 520 K the grey outgoing infrared falls for a wet planet, so the
+  energy chart shows a second crossing (deviation 16).
+- Weathering is held at its 330 K value above 330 K and scales linearly with
+  land area (section 2.11). Both are game choices and are documented.
 - The grey optical depth and the thick-CO2 term are calibrated fits, not line-by-line
   radiation. Calibration constants and their basis are listed in `docs/MODEL.md`.
-- With these choices the moist-greenhouse and runaway thresholds sit near 1.19 to 1.21
-  times the present sunlight, which is higher than the 1-D estimates and at the upper end of the 3-D range.
+- With these choices the runaway onset sits near 1.19 times the present sunlight and the
+  moist-greenhouse onset near 1.20. These are higher than the 1-D estimates and at the
+  upper end of the 3-D range.
+- With Earth gases the cold, frozen state stays stable over a wide range of
+  sunlight (about 0.905 to 1.25 times the present), so the starting state can decide
+  the outcome (section 2.8).
 - The runaway and moist onsets come in the opposite order to the brief's
   expected sequence. This is discussed in `docs/MODEL.md`, section 7.
 - Some climate states are classified from the model's output but their physics is
