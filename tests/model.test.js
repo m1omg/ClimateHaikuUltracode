@@ -333,18 +333,26 @@ test('R1b. Vapour above saturation condenses into the ocean; the inventory is no
   assert.ok(Math.abs(s.waterOED + s.escapedOED - 275) <= WATER_LEDGER_TOL * 275, 'inventory unchanged by condensation');
 });
 
-test('R1c. Water budget over 100 kyr: inventory changes only by the escape ledger', () => {
-  // Condensation and evaporation are transfers between vapour and liquid, so
-  // waterOED + escapedOED must stay at the initial inventory.
+test('R1c. Water escape follows the stated rate law over 100 kyr (checked against the formula, not the ledger)', () => {
+  // Escape removes water at rate f(Ts) / (1 Gyr x 3e-3) per year, with f the
+  // stratospheric water fraction (MODEL.md 2.10). The expected inventory is
+  // rebuilt here from the sampled surface temperatures, independently of the
+  // model's own escape ledger, and compared with the model.
+  const frac = (T) => Math.min(0.5, Math.max(1e-6, 3e-3 * Math.exp((T - 355) / 12)));
   const c = Object.assign(M.defaultConfig(), { evolveStar: false, S: 0.3, waterOED_m: 275 });
   const s = M.createState(c, { Ts0: 1000 });
   s.Ts = 500;
   s.Td = 500;
   const W0 = 275;
-  for (let i = 0; i < 100; i++) M.step(s, c, 1000);
+  let logRatio = 0;
+  for (let i = 0; i < 100; i++) {
+    const Tb = s.Ts;
+    M.step(s, c, 1000);
+    logRatio -= 1000 * 0.5 * (frac(Tb) + frac(s.Ts)) / (1e9 * 3e-3);
+  }
+  const expected = W0 * Math.exp(logRatio);
   assert.ok(s.escapedOED > 0, 'escape acted over 100 kyr at steam temperatures');
-  assert.ok(Math.abs(s.waterOED + s.escapedOED - W0) <= WATER_LEDGER_TOL * W0,
-    `budget ${s.waterOED} + ${s.escapedOED} vs ${W0}`);
+  assert.ok(Math.abs(s.waterOED - expected) <= 0.02 * expected, `inventory ${s.waterOED} vs rate law ${expected}`);
   assert.ok(s.oceanDepthM >= 0 && s.oceanDepthM <= s.waterOED + 1e-9, 'liquid within the inventory');
 });
 
@@ -426,3 +434,67 @@ test('R4. Weathering saturates above 1% land: identical for land 0.05 and 0.29; 
   assert.equal(M.weatheringFactorAt(base, 288, false), 0, 'no weathering without liquid');
 });
 
+
+// ---- Fix round: step-size convergence, chatter, labels and the cap start
+
+function dryOutTime(S, co2, d, m, rot, T0, dt, tMax) {
+  const c = Object.assign(M.defaultConfig(), { S: S, evolveStar: false, co2Bar: co2, waterOED_m: d, massEM: m, rotationDays: rot });
+  const s = M.createState(c, T0 !== undefined ? { Ts0: T0 } : undefined);
+  while (s.tYears < tMax && s.oceanDepthM > 0) M.step(s, c, dt);
+  return s.oceanDepthM > 0 ? null : s.tYears;
+}
+
+test('F1. Runaway dry-out does not depend on the requested step (50 vs 5000 yr requests agree within 5%)', () => {
+  // S = 1.22 from 300 K dries in about 55 kyr. A 5000 yr request is quantised
+  // to 5000 yr, so the tolerance includes one request.
+  const t50 = dryOutTime(1.22, 4.2e-4, 2700, 1, 1, 300, 50, 3e5);
+  const t5000 = dryOutTime(1.22, 4.2e-4, 2700, 1, 1, 300, 5000, 3e5);
+  console.log(`      dry-out S 1.22 from 300 K: ${t50} yr at 50 yr requests, ${t5000} yr at 5000 yr requests`);
+  assert.ok(t50 !== null && t5000 !== null, 'both runs dry out');
+  assert.ok(Math.abs(t50 - t5000) <= 0.05 * t50 + 5000, `${t50} vs ${t5000}`);
+});
+
+test('F2. Constant forcing with a thin ocean makes one transition, not a wet/dry cycle', () => {
+  const c = Object.assign(M.defaultConfig(), { S: 1.5, evolveStar: false, co2Bar: 0.01, waterOED_m: 300, massEM: 5, rotationDays: 30 });
+  for (const dt of [50, 2000]) {
+    const s = M.createState(c);
+    let prev = null;
+    let changes = 0;
+    while (s.tYears < 1e4) {
+      M.step(s, c, dt);
+      const id = M.diagnose(s, c).state.id;
+      if (prev !== null && id !== prev) changes++;
+      prev = id;
+    }
+    assert.ok(changes <= 1, `${changes} label changes at ${dt} yr steps`);
+    assert.equal(s.oceanDepthM, 0, `ocean gone by 10 kyr at ${dt} yr steps`);
+  }
+});
+
+test('F3. A runaway starts pinned at the cap: OLR within 1 W m^-2 of the cap at t = 0', () => {
+  const c = M.PRESETS.find((p) => p.id === 'runaway').config;
+  const s = M.createState(c);
+  const d = M.diagnose(s, c);
+  assert.ok(Math.abs(d.olrWm2 - d.olrCapWm2) < 1, `OLR ${d.olrWm2} vs cap ${d.olrCapWm2} at ${s.Ts} K`);
+  assert.equal(d.state.id, 'wet_runaway');
+});
+
+test('F4. Dry steam with absorbed flux above the wet cap does not re-form an ocean', () => {
+  const c = Object.assign(M.defaultConfig(), { evolveStar: false, S: 1.5, waterOED_m: 300 });
+  const s = M.createState(c, { Ts0: 500 });
+  s.oceanDepthM = 0;
+  s.iceFraction = 0;
+  M.step(s, c, 100);
+  assert.equal(s.oceanDepthM, 0, `ocean ${s.oceanDepthM} m re-formed in runaway`);
+  assert.equal(M.diagnose(s, c).state.id, 'dry_runaway');
+});
+
+test('F5. Steam without an ocean is labelled as steam at any temperature above freezing', () => {
+  const c = Object.assign(M.defaultConfig(), { evolveStar: false, S: 1.0, waterOED_m: 10 });
+  const s = M.createState(c, { Ts0: 380 });
+  s.oceanDepthM = 0;
+  s.waterOED = 10;
+  const d = M.diagnose(s, c);
+  assert.ok(d.pH2OBar >= 0.5, `vapour ${d.pH2OBar} bar`);
+  assert.equal(d.state.id, 'dry_runaway');
+});

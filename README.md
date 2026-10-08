@@ -74,13 +74,16 @@ slowly in a moist atmosphere, on Gyr timescales.
 Caveats:
 
 - The model has no latitude structure and no heat transport. Cloud feedback is not represented.
-- Vapour above saturation condenses back into the ocean, with its latent heat.
-  Recovery from dry steam is still slow: at S = 0.3 from 906 K, liquid returns after
-  about 7 Myr, because hydrogen escape from the steam sets the pace
-  (`docs/MODEL.md`, section 7, deviation 15).
+- Vapour above saturation condenses back into the ocean, with its latent heat, and
+  the surface and deep ocean both warm. An ocean is not re-formed from steam where it
+  would be in runaway, since the planet could not hold it (`docs/MODEL.md`, section 7,
+  deviations 14, 15 and 21). Recovery from dry steam is still slow: at S = 0.3 from
+  906 K, liquid returns after about 7 Myr, because hydrogen escape from the steam sets
+  the pace (`docs/MODEL.md`, section 7, deviation 15).
 - Over liquid, the grey water opacity is held fixed above 0.1 bar, so the outgoing
-  infrared never falls with temperature. The energy chart has one balance point
-  there, and the cap sets the temperature in the runaway (deviation 16).
+  infrared does not fall with temperature on the test grid (deviations 16 and 24). In a
+  runaway the cap sets the outgoing infrared, and the surface temperature rises with the
+  vapour column (deviation 23).
 - Weathering is held at its 330 K value above 330 K. It saturates above 1% land
   (section 2.11), so a world with 1% land weathers about as fast as Earth. Both are
   game choices and are documented.

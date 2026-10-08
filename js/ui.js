@@ -340,8 +340,10 @@ const ClimateUI = (function () {
     return m >= 1000 ? (m / 1000).toFixed(2) + ' km' : Math.round(m) + ' m';
   }
 
+  // The note follows the classified state, so it cannot contradict the headline.
   function noteText(diag) {
     const f = diag.flags;
+    const id = diag.state ? diag.state.id : '';
     if (f.hasLiquidWater && diag.absorbedWm2 > diag.olrCapWm2) {
       return 'No equilibrium with liquid water: absorbed sunlight (' + diag.absorbedWm2.toFixed(0) + ' ' +
         SUP_MINUS_2 + ') is above the ' + diag.olrCapWm2.toFixed(0) + ' ' + SUP_MINUS_2 +
@@ -351,7 +353,10 @@ const ClimateUI = (function () {
       return 'No liquid: absorbed sunlight is above the cap at this temperature, so the surface keeps warming ' +
         'until the steam branch (near 1600 K) can radiate it.';
     }
-    if (f.moistGreenhouse) {
+    if (id === 'wet_runaway') {
+      return 'OLR is at its cap, so the surplus absorbed sunlight evaporates the ocean. The surface warms as the vapour column builds up.';
+    }
+    if (id === 'moist_greenhouse') {
       return 'Moist greenhouse: the surface is above 330 K. Water vapour reaches the stratosphere, and hydrogen escapes slowly.';
     }
     return '';
@@ -391,6 +396,7 @@ const ClimateUI = (function () {
     setText(hudEls.stateName, diag.state.name);
     setText(hudEls.stateSummary, diag.state.summary);
     setText(hudEls.note, noteText(diag));
+    setText(hudEls.simTime, RD.formatYears(diag.tYears));
     setText(hudEls.ts, diag.Ts.toFixed(1) + ' K (' + diag.TsC.toFixed(1) + ' ' + DEG + 'C)');
     setText(hudEls.pressure, RD.formatSurfaceBar(diag.surfacePressureBar));
     setText(hudEls.co2, RD.formatBar(diag.pCO2Bar) + (diag.pCO2Bar < 0.1 ? ppm(diag.pCO2Bar) : ''));

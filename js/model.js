@@ -40,10 +40,12 @@ const ClimateModel = (function () {
   const F_STRAT_REF = 3e-3;          // reference stratospheric water fraction (about 355 K)
   const MAX_SUB_YR = 5000;           // largest internal step (years)
   const MIN_SUB_YR = 0.5;            // smallest internal step (years)
-  const MAX_DT_K = 3;                // K, largest predicted surface change per internal step
+  const MAX_DT_K = 0.1;              // K, largest predicted surface change per internal step (near the cap the surface follows the cap temperature, so this bounds the cap-edge sawtooth)
+  const DRAIN_FRAC = 0.01;           // largest fraction of the remaining liquid evaporated in one internal step
   const TS_FLOOR = 2;                // K, numerical floor on Ts and Td (never reached by the physics)
   const WEATHER_T_MAX = 330;         // K, the weathering temperature factor is held at its 330 K value above this
   const RUNAWAY_TOL = 1;             // W m^-2, absorbed flux must exceed the cap by this much for a runaway label
+const RUNAWAY_OLR_TOL = 4;         // W m^-2, OLR within this of the cap counts as cap-limited (the pinned OLR moves by a few W m^-2 between steps)
   const MAX_FRAME_S = 0.25;          // wall-clock clamp per advance call
   const MAX_STEPS_PER_CALL = 2000;
   const MIN_MASS_EM = 0.01;          // Earth masses, lower bound used to keep the radius law finite
@@ -336,7 +338,7 @@ const ClimateModel = (function () {
   // condensation occurs. A root above CRITICAL_T is capped there, and the rest of
   // the vapour stays in the air. Water moves between vapour and liquid only, so
   // the inventory is unchanged. Returns the condensed depth (m).
-  function condense(s, c, geo) {
+  function condense(s, c, geo, Seff) {
     if (!(s.Ts < CRITICAL_T)) return 0;
     const liquidBefore = s.oceanDepthM > 0;
     const p = vapourBar(s, c, geo, s.Ts, liquidBefore);
@@ -360,7 +362,23 @@ const ClimateModel = (function () {
       m = denom > 0 ? Math.min(m, room * (C_MIX + WATER_HEAT_PER_M * L0) / denom) : 0;
     }
     if (!(m > 0)) return 0;
+    if (!liquidBefore) {
+      // Re-forming an ocean from steam is refused where the ocean would be in
+      // runaway (absorbed flux above the cap). The brief says dry runaway is
+      // reversible only at lower flux: such a planet could not hold the
+      // ocean, so it would evaporate again. Refusing the condensate keeps the
+      // steam state steady instead of cycling between wet and dry (MODEL.md 2.9).
+      const Tn = Math.min(s.Ts + dT(m), CRITICAL_T);
+      const sNew = Object.assign({}, s, { oceanDepthM: L0 + m, iceFraction: iceEquilibrium(Tn) });
+      const Fw = fluxes(sNew, c, geo, Tn, Seff, true);
+      if (Fw.absorbed > Fw.cap + RUNAWAY_TOL) return 0;
+    }
+    // The latent heat warms the whole liquid column (mixed layer and deep ocean,
+    // the heat capacity used in dT), so the deep temperature rises by the same
+    // amount. Warming only Ts would leave WH*L*dT of the latent heat unstored.
+    const Told = s.Ts;
     s.Ts = Math.min(s.Ts + dT(m), CRITICAL_T);
+    s.Td += s.Ts - Told;
     s.oceanDepthM = L0 + m;
     if (!liquidBefore) s.iceFraction = iceEquilibrium(s.Ts);
     return m;
@@ -372,14 +390,19 @@ const ClimateModel = (function () {
   // more than half the liquid, so the drain is resolved rather than skipped.
   // The thermal solve is pure, so trial results are applied only once accepted.
   // Returns the time taken.
-  function substep(s, c, geo, h0) {
+  function substep(s, c, geo, h0, remaining) {
     const trial = (hh) => thermal(s, c, geo, hh, effectiveFlux(c, s.tYears + 0.5 * hh));
     let h = h0;
     let th = trial(h);
     const tooFast = (t, hh) => Math.abs(t.Ts - s.Ts) > MAX_DT_K
-      || t.evap * hh * YEAR_S / EVAP_J_PER_M > 0.5 * s.oceanDepthM;
+      || t.evap * hh * YEAR_S / EVAP_J_PER_M > DRAIN_FRAC * s.oceanDepthM;
     while (h > MIN_SUB_YR && tooFast(th, h)) {
       h = Math.max(MIN_SUB_YR, 0.5 * h);
+      th = trial(h);
+    }
+    // The requested chunk can cut the step short. The cut step is re-solved.
+    if (h > remaining) {
+      h = remaining;
       th = trial(h);
     }
     const liquidBefore = s.oceanDepthM > 0;
@@ -401,7 +424,7 @@ const ClimateModel = (function () {
     L = Math.min(L * ratio, s.waterOED);
     s.oceanDepthM = L;
     // Vapour above saturation condenses back into the ocean (see condense).
-    const condensedM = condense(s, c, geo);
+    const condensedM = condense(s, c, geo, effectiveFlux(c, s.tYears + 0.5 * h));
 
     s.h2Bar *= Math.exp(-h / TAU_H2_YR);
     const dCO2 = co2Step(s, c, geo, h, liquidBefore || s.oceanDepthM > 0);
@@ -461,7 +484,11 @@ const ClimateModel = (function () {
     const geo = geometry(config);
     let remaining = dtYears;
     while (remaining > 1e-12) {
-      let h = Math.min(remaining, MAX_SUB_YR);
+      // The internal step comes from a ladder that starts at MAX_SUB_YR and
+      // depends only on the state. The requested chunk can only cut the last
+      // step, so the result does not depend on how the time is chunked
+      // (MODEL.md 2.7, deviation 18).
+      let h = MAX_SUB_YR;
       const liquid = state.oceanDepthM > 0;
       const Seff = effectiveFlux(config, state.tYears);
       const lam = olrAt(state, config, geo, state.Ts + 0.5, Seff, liquid)
@@ -469,7 +496,7 @@ const ClimateModel = (function () {
       // A negative feedback (possible where OLR falls with Ts) is only stepped
       // stably with a short step. The linear solve itself ignores it.
       if (lam < 0) h = Math.min(h, Math.max(MIN_SUB_YR, 2 * C_MIX / (-lam * YEAR_S)));
-      remaining -= substep(state, config, geo, h);
+      remaining -= substep(state, config, geo, h, remaining);
     }
   }
 
@@ -563,11 +590,39 @@ const ClimateModel = (function () {
     return found;
   }
 
+  // Surface temperature at which the grey OLR of a wet planet reaches the cap.
+  // It is the stall temperature of a runaway: the planet is pinned there while
+  // its ocean evaporates. Null if the cap is not reached below the critical point.
+  function findCapTemperature(base, c, geo, Seff) {
+    const excess = (T) => {
+      const sT = Object.assign({}, base, { iceFraction: iceEquilibrium(T) });
+      const F = fluxes(sT, c, geo, T, Seff, true);
+      return F.g - F.cap;
+    };
+    let prevT = 40;
+    if (excess(prevT) >= 0) return prevT;
+    for (let i = 1; i <= 120; i++) {
+      const T = 40 + (CRITICAL_T - 40) * i / 120;
+      if (excess(T) >= 0) {
+        let a = prevT;
+        let b = T;
+        for (let k = 0; k < 60; k++) {
+          const m = 0.5 * (a + b);
+          if (excess(m) < 0) a = m; else b = m;
+        }
+        return 0.5 * (a + b);
+      }
+      prevT = T;
+    }
+    return null;
+  }
+
   // Initial state at radiative equilibrium for the config (or opts.Ts0). With
   // ocean area the warmest stable equilibrium is used, so the start is on the
   // warm branch where two exist. If there is none (absorbed flux above the cap),
-  // the planet starts at 300 K and runs away. Ice and the carbonate ratio are set
-  // consistently with the start temperature.
+  // the planet starts at the temperature where its OLR reaches the cap, so the
+  // runaway is pinned from the first step (MODEL.md 2.9, deviation 12). Ice and
+  // the carbonate ratio are set consistently with the start temperature.
   function createState(config, opts) {
     const c = config;
     const geo = geometry(c);
@@ -587,7 +642,8 @@ const ClimateModel = (function () {
       liquid = wetPossible && Ts0 < CRITICAL_T;
     } else if (wetPossible) {
       const wet = findEquilibrium(base, c, geo, Seff, true, 40, CRITICAL_T, 120);
-      Ts0 = wet !== null ? wet : 300;
+      const capT = wet === null ? findCapTemperature(base, c, geo, Seff) : null;
+      Ts0 = wet !== null ? wet : (capT !== null ? capT : 300);
       liquid = true;
     } else {
       const dry = findEquilibrium(base, c, geo, Seff, false, 40, 2000, 196);
@@ -654,11 +710,12 @@ const ClimateModel = (function () {
         hasIce: liquid && f > 0.02,
         moistGreenhouse: liquid && s.Ts >= 330,
         // Liquid present and either absorbed sunlight above the cap (no
-        // equilibrium exists), or OLR at the cap with absorbed sunlight within
-        // RUNAWAY_TOL of it (the cap-limited edge). The tolerance stops the
-        // label from flipping on differences of a few hundredths of a W m^-2.
+        // equilibrium exists), or the OLR within RUNAWAY_OLR_TOL of the cap with
+        // absorbed sunlight within RUNAWAY_TOL of it (the cap-limited edge). The
+        // tolerances stop the label from flipping while a pinned planet's OLR
+        // moves by a few W m^-2 between steps (MODEL.md 2.9).
         runawayActive: liquid && (F.absorbed > F.cap + RUNAWAY_TOL
-          || (F.g >= F.cap - RUNAWAY_TOL && F.absorbed >= F.cap - RUNAWAY_TOL)),
+          || (F.g >= F.cap - RUNAWAY_OLR_TOL && F.absorbed >= F.cap - RUNAWAY_TOL)),
         hot: s.Ts > 373.15,
         hasSteamAtmosphere: !liquid && env.pH2O > 0.1
       }
@@ -682,9 +739,9 @@ const ClimateModel = (function () {
     { id: 'moist_greenhouse', name: 'Moist greenhouse',
       summary: 'Oceans stay liquid above about 330 K, and water vapour climbs high enough to let light hydrogen escape slowly, draining the ocean over about a billion years.' },
     { id: 'wet_runaway', name: 'Wet runaway',
-      summary: 'Absorbed sunlight exceeds the most infrared a moist atmosphere can emit. The surface temperature stalls while the surplus evaporates the ocean.' },
+      summary: 'Absorbed sunlight exceeds the most infrared a moist atmosphere can emit. OLR sits at its cap, and the surplus evaporates the ocean while the surface warms with the vapour column.' },
     { id: 'dry_runaway', name: 'Dry runaway (steam)',
-      summary: 'The ocean has evaporated into a thick steam atmosphere. Surface temperature rises until the steam can radiate the absorbed sunlight, near 1300 K in this model.' },
+      summary: 'The ocean has evaporated into a steam atmosphere. Surface temperature rises until the steam can radiate the absorbed sunlight; for S of 1.25 to 1.4 that is near 1300 K in this model.' },
     { id: 'venus_like', name: 'Venus-like desiccated',
       summary: 'A dense CO2 atmosphere, about 90 bar, with almost no water left. The thick CO2 traps heat, and the surface reaches about 740 K.' },
     { id: 'mars_like', name: 'Mars-like',
@@ -709,7 +766,7 @@ const ClimateModel = (function () {
     const f = d.iceFraction;
     let id;
     if (!wet && T < 200 && d.pCH4Bar >= 0.01 && d.pN2Bar >= 0.5) id = 'titan_like';
-    else if (!wet && d.pH2OBar >= 0.5 && T >= 400) id = d.pCO2Bar >= 10 ? 'hadean_steam' : 'dry_runaway';
+    else if (!wet && d.pH2OBar >= 0.5 && T >= 273) id = (d.pCO2Bar >= 10 && T >= 400) ? 'hadean_steam' : 'dry_runaway';
     else if (!wet && d.pCO2Bar >= 10 && T >= 500) id = 'venus_like';
     else if (wet && d.flags.runawayActive) id = 'wet_runaway';
     else if (wet && T >= 330) id = 'moist_greenhouse';
@@ -799,7 +856,7 @@ const ClimateModel = (function () {
       blurb: 'Weaker sunlight (S = 0.72) under ice. The ice reflects most of the light and the planet stays frozen.',
       config: withConfig({ S: 0.72, evolveStar: false }) },
     { id: 'late_earth', name: 'Warm Earth (S 1.10)',
-      blurb: 'Earth-like gases with 10% more sunlight. Oceans warm toward the moist greenhouse.',
+      blurb: 'Earth-like gases with 10% more sunlight. Weathering draws CO2 down as the oceans warm, and the planet settles at a cooler temperate state within about 10 kyr.',
       config: withConfig({ S: 1.10, evolveStar: false }) },
     { id: 'runaway', name: 'Wet runaway (S 1.4)',
       blurb: 'Strong sunlight over an ocean. The ocean evaporates while the surface temperature holds.',

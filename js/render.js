@@ -463,7 +463,10 @@ const ClimateRender = (function () {
   }
 
   function cloudCover(diag) {
-    return clamp((diag.albedo - 0.12) / 0.4, 0, 1) * (diag.flags.hasLiquidWater ? 1 : 0.6);
+    const base = clamp((diag.albedo - 0.12) / 0.4, 0, 1) * (diag.flags.hasLiquidWater ? 1 : 0.6);
+    // A hot, steam-rich atmosphere hazes the disk, whatever the albedo.
+    const veil = clamp(diag.pH2OBar / 2, 0, 1) * smooth(340, 420, diag.Ts) * 0.7;
+    return Math.max(base, veil);
   }
 
   function paintDisk(disk, diag, config, motion, simTime) {
@@ -728,10 +731,12 @@ const ClimateRender = (function () {
       c.strokeStyle = pal.ink;
       c.stroke();
       if (mk.stable) {
+        // Above the cap line, ending at the crossing: left of a stable crossing the OLR
+        // curve lies below the cap, so this band is clear, and the label stays inside the plot.
         c.fillStyle = pal.ink;
-        c.textAlign = 'left';
+        c.textAlign = 'right';
         c.textBaseline = 'bottom';
-        haloText(c, 'equilibrium ' + Math.round(mk.T) + ' K', x + 8, y - 7, pal.panel);
+        haloText(c, 'equilibrium ' + Math.round(mk.T) + ' K', x + 4, yOf(CAP_BASE) - 4, pal.panel);
       }
     });
 
@@ -748,13 +753,17 @@ const ClimateRender = (function () {
 
     // Reference labels and legend.
     c.font = FONT;
-    c.textAlign = 'right';
-    c.textBaseline = 'bottom';
-    c.fillStyle = pal.absorbed;
-    haloText(c, 'absorbed ' + absorbed.toFixed(0), m.l + pw - 2, yOf(absorbed) - 3, pal.panel);
-    c.fillStyle = pal.cap;
     c.textAlign = 'left';
-    haloText(c, 'cap 282', m.l + 4, yOf(CAP_BASE) - 3, pal.panel);
+    // Left end. The OLR curve lies well below both lines there. When absorbed is above
+    // the cap the two lines are close, so the absorbed label goes above its line and
+    // the cap label below its line, which keeps them apart.
+    const aboveCap = absorbed > CAP_BASE;
+    c.fillStyle = pal.absorbed;
+    c.textBaseline = aboveCap ? 'bottom' : 'top';
+    haloText(c, 'absorbed ' + absorbed.toFixed(0), m.l + 4, yOf(absorbed) + (aboveCap ? -3 : 3), pal.panel);
+    c.fillStyle = pal.cap;
+    c.textBaseline = aboveCap ? 'top' : 'bottom';
+    haloText(c, 'cap 282', m.l + 4, yOf(CAP_BASE) + (aboveCap ? 3 : -3), pal.panel);
     let lx = m.l;
     const legend = [['OLR', pal.olr, []], ['absorbed', pal.absorbed, [6, 4]], ['cap', pal.cap, [2, 3]]];
     c.textAlign = 'left';
@@ -775,12 +784,18 @@ const ClimateRender = (function () {
 
     // No equilibrium with liquid water: say so, rather than leaving an empty plot.
     if (liquid && absorbed > cap) {
-      const boxW = Math.min(pw - 12, 270);
+      // Narrow plots show the title alone, in a box that fits it, so the box does
+      // not cover the steep part of the OLR curve. The HUD note gives the detail.
+      const narrow = pw < 420;
+      const title = 'No equilibrium with liquid water';
+      c.font = 'bold 12px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif';
+      const titleW = c.measureText(title).width;
       c.font = FONT;
-      const lines = wrapText(c, 'Absorbed sunlight (' + absorbed.toFixed(0) + ' W m⁻²) is above the ' +
+      const boxW = narrow ? Math.min(pw - 12, titleW + 16) : Math.min(pw - 12, 270);
+      const lines = narrow ? [] : wrapText(c, 'Absorbed sunlight (' + absorbed.toFixed(0) + ' W m⁻²) is above the ' +
         cap.toFixed(0) + ' W m⁻² cap. The ocean evaporates, and the surface warms only as the steam allows.', boxW - 16);
       const lineH = 15;
-      const boxH = 22 + lines.length * lineH + 6;
+      const boxH = 22 + lines.length * lineH + (lines.length ? 6 : 0);
       const bx = m.l + pw - boxW - 6;
       const by = m.t + ph - boxH - 6;
       c.fillStyle = pal.panel;
@@ -796,7 +811,7 @@ const ClimateRender = (function () {
       c.textAlign = 'left';
       c.textBaseline = 'top';
       c.font = 'bold 12px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif';
-      c.fillText('No equilibrium with liquid water', bx + 8, by + 6);
+      c.fillText(title, bx + 8, by + 6);
       c.font = FONT;
       lines.forEach(function (line, k) {
         c.fillText(line, bx + 8, by + 22 + k * lineH);
@@ -817,6 +832,14 @@ const ClimateRender = (function () {
       c.quadraticCurveTo(xs[i], ys[i], (xs[i] + xs[i + 1]) / 2, (ys[i] + ys[i + 1]) / 2);
     }
     c.lineTo(xs[n - 1], ys[n - 1]);
+  }
+
+  // A round step (1, 2 or 5 times a power of ten) that gives about count intervals.
+  function niceStep(span, count) {
+    const raw = span / count;
+    const p = Math.pow(10, Math.floor(Math.log10(raw)));
+    const f = raw / p;
+    return (f <= 1 ? 1 : (f <= 2 ? 2 : (f <= 5 ? 5 : 10))) * p;
   }
 
   function drawSeries(v, history, state, pal) {
@@ -968,10 +991,12 @@ const ClimateRender = (function () {
     c.fillStyle = pal.muted;
     c.textAlign = 'center';
     c.textBaseline = 'top';
-    for (let k = 0; k <= 4; k++) {
-      const tv = span * k / 4;
+    // Round tick values (1, 2 or 5 times a power of ten), from zero to the span.
+    const tickStep = niceStep(span / div, 4) * div;
+    for (let k = 0; k < 12 && k * tickStep <= span * (1 + 1e-9); k++) {
+      const tv = k * tickStep;
       const label = unitName === 'yr' ? addCommas(Math.round(tv)) : (tv / div).toFixed(unitName === 'Gyr' ? 2 : 1);
-      c.textAlign = k === 0 ? 'left' : (k === 4 ? 'right' : 'center');
+      c.textAlign = k === 0 ? 'left' : (xOf(tv) > m.l + pw - 30 ? 'right' : 'center');
       c.fillText(label, xOf(tv), axisY + 4);
     }
     c.textAlign = 'center';

@@ -35,6 +35,7 @@
         <ul class="badges" data-field="badges"></ul>
 
         <dl class="readouts">
+          <div><dt>Simulated time</dt><dd data-field="simTime"></dd></div>
           <div><dt>Surface temperature</dt><dd data-field="ts"></dd></div>
           <div><dt>Surface pressure</dt><dd data-field="pressure"></dd></div>
           <div><dt>Carbon dioxide</dt><dd data-field="co2"></dd></div>
@@ -73,14 +74,14 @@
         </ul>
       </section>
 
-      <figure class="card">
+      <figure class="card card--energy">
         <div class="plot plot--energy">
           <canvas id="energy-canvas" role="img" aria-label="Energy balance: outgoing infrared against surface temperature"></canvas>
         </div>
         <figcaption>Energy balance. The curve is the infrared the planet can emit at each surface temperature. Where it crosses the dashed absorbed-sunlight line, the planet is in equilibrium.</figcaption>
       </figure>
 
-      <figure class="card">
+      <figure class="card card--series">
         <div class="plot plot--series">
           <canvas id="series-canvas" role="img" aria-label="History of surface temperature, ocean depth, CO2 and sea ice"></canvas>
         </div>

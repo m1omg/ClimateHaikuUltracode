@@ -204,16 +204,28 @@ figcaption {
     align-items: start;
   }
 
+  /* Planet, energy balance and history in the left column; the HUD runs beside
+     all three, so no blank block is left under a short planet card. */
   .stage {
     grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
     align-items: start;
   }
 
+  .card--planet { grid-column: 1; grid-row: 1; }
+  .card--energy { grid-column: 1; grid-row: 2; }
+  .card--series { grid-column: 1; grid-row: 3; }
+  .stage > .hud { grid-column: 2; grid-row: 1 / span 3; align-self: stretch; }
+
+  /* Controls run full width under the stage, in two columns, so the page has no
+     empty block beside a long controls column and nothing is clipped. */
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
   .side {
-    position: sticky;
-    top: 12px;
-    max-height: calc(100vh - 24px);
-    overflow-y: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
   }
 }
 
@@ -460,8 +472,8 @@ legend {
 }
 
 .field--check input[type="checkbox"] {
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   margin: 0;
   accent-color: var(--accent);
 }
