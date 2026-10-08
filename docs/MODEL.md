@@ -14,6 +14,7 @@ is chosen rather than taken from the brief, its basis is given. Numbers marked
 | `iceFraction` | sea-ice fraction of the open ocean, relaxing toward equilibrium (zero without liquid) |
 | `oceanDepthM` | liquid ocean-equivalent depth (m) |
 | `waterOED` | total water inventory (m OED); vapour = `waterOED - oceanDepthM` |
+| `escapedOED` | water lost by escape so far (m OED). `waterOED + escapedOED` is the inventory, the water ledger tested in R1c and R1d |
 | `co2Bar`, `ch4Bar`, `n2Bar`, `o2Bar`, `h2Bar` | gas inventories, bar at Earth gravity |
 | `last` | rates from the last step (`netWm2`, `evapWm2`, `carbonRatio`), used for diagnostics |
 
@@ -75,15 +76,52 @@ Grey optical depth:
 | N2 + O2 | `0.1 p` | Pressure broadening, a documented choice. The brief gives no coefficient. |
 | CH4 | `3.6e-4 sqrt(p_ppb)` | Scaled to Etminan et al. (2016): 0.61 W m^-2 for 722→1803 ppb (brief Section 4). |
 | H2 | `5 p^2` | Collision-induced absorption, simple p^2 scaling (brief Section 4). Documented. |
-| H2O | `2.51 p^0.3 + 0.02 p^2`, with `p` capped at 300 bar | Sub-linear term calibrated to Earth; quadratic term for steam (see below). |
+| H2O over liquid | `2.51 p^0.3` for `p ≤ 0.01 bar`; `2.51 × 0.01^0.3 × (p/0.01)^0.47` for `0.01 < p ≤ 0.1 bar`; held at its 0.1 bar value above (section 2.3.1) | Calibrated to Earth (288 K, 240 W m^-2) and to the moist-first ordering (section 2.3.1). |
+| H2O without liquid (steam) | `2.51 p^0.3 + 0.02 p^2`, with `p` capped at 300 bar | Steam branch (see below). |
+| H2O vapour column over liquid | `2.51 p_col^0.3 + 0.02 p_col^2`, where `p_col` is the vapour left by evaporation (`waterOED - oceanDepthM`), capped at 300 bar | Zero for a full ocean. Its opacity is set by the column, not by temperature. |
 
 - `p` is the partial pressure: inventory × gravity factor (section 2.5).
 - Water partial pressure (section 2.6): `p_H2O`.
 - The water opacity is capped at 300 bar, so a very deep steam atmosphere
-  cannot exceed about 1700 K. The quadratic water term makes OLR fall with
-  temperature above about 520 K for a wet planet (section 7, deviation 16).
+  cannot exceed about 1700 K. Over liquid, the water opacity has no quadratic
+  term and is held above 0.1 bar, so OLR does not fall with temperature
+  (section 2.3.1, deviation 16, resolved).
 
 Earth calibration: Ts = 287.9 K and OLR = 240.1 W m^-2 (target 288 K and 239 W m^-2).
+
+### 2.3.1 Water opacity over liquid, and the moist-first ordering
+
+Over an ocean the vapour pressure follows saturation, which rises by about
+0.05 per K near 330 K. Two requirements constrain the opacity that this creates.
+
+- **Monotone OLR.** If the optical depth rises with `p` faster than `p^0.46` (for
+  example with the `p^2` steam term, or a single power above about 0.45), the
+  grey OLR falls with temperature near 340–390 K for an ocean planet. The old model
+  dipped by 15 W m^-2 near 549 K this way (deviation 16). The energy chart then had
+  a second balance point.
+- **Moist first.** For the 330 K moist threshold to come before the cap binds, the
+  grey OLR at 330 K must be below 282 W m^-2 at fixed CO2. That needs a vapour
+  opacity that rises from 288 K to 330 K by a factor of about 3, while the Earth OLR
+  stays at 240 W m^-2.
+
+The model meets both with a broken power law over liquid:
+`p^0.3` (the original law) up to the Earth surface vapour pressure, 0.01 bar; `p^0.47`
+above it; and a hold at 0.1 bar, the value reached at about 330 K for an Earth ocean.
+The hold keeps the OLR from falling. Monotonicity is tested on a 3001-point grid over
+150–2000 K for Earth gases, steam and thick CO2 (test R3).
+
+Measured results (Earth gases, liquid, CO2 fixed at 4.2e-4 bar):
+- grey OLR at 330 K = 265.1 W m^-2 (before 321.2, uncapped);
+- the cap binds at about 340 K, where the flux balance gives S ≈ 1.20.
+
+With the carbon cycle on, weathering draws CO2 down during the ramp (to about 1.5e-8 bar
+by the moist onset, section 2.11). Since less CO2 raises the grey OLR at 330 K, the ramp
+moist onset is S = 1.167. The runaway label fires at S = 1.198 (section 4).
+
+Other exponents were tried: a single power law with 0.45 gave a dip of 0.27 W m^-2 near
+384 K, and 0.48 gave a dip of 0.6 W m^-2 near 375 K. With exponent 0.42 the 330 K
+margin falls to 1 W m^-2. The broken law with a hold at 0.1 bar is the best of those
+checked. It is still a fit, and its margins are small (section 7, deviation 1).
 
 ### 2.4 Thick CO2 (Venus-like), a fit
 
@@ -109,8 +147,9 @@ about 737 K). It is negligible at Earth and Mars pressures.
   documented, `p_evaporated` is the vapour from water already evaporated, and
   `p_total` is the total water inventory as a pressure.
 - Without liquid: `p_H2O` equals the whole water inventory (steam).
-- There is no condensation. Vapour that has left the ocean stays in the column
-  whatever the temperature. Section 2.9 and section 8 state the consequences.
+- Condensation (section 2.9). Vapour above the saturation pressure at the
+  surface temperature condenses into the ocean below the critical point (647.1 K).
+  Water is conserved (section 2.9).
 
 ### 2.7 Thermal balance: mixed layer and deep ocean
 
@@ -158,6 +197,8 @@ Energy accounting is consistent within a step, with two exceptions. The first
 is the crossing of the critical point inside a step, where the storage in the
 overshoot is not booked. The second is an ocean that is fully evaporated within
 one step, where energy beyond the remaining liquid is not carried over (section 7).
+A third exception is the critical-point cap on condensation (section 2.9), where
+the latent heat that would take the surface past 647.1 K is not booked.
 
 ### 2.8 Sea ice
 
@@ -171,17 +212,24 @@ one step, where energy beyond the remaining liquid is not carried over (section 
   is a static fold in the equilibrium curve, not an effect of ice lag. Earth
   gases with CO2 held at 4.2e-4 bar (physics review, rerun with this code):
   - The warm (temperate) branch exists only for S ≥ 0.9075.
-  - A cold start is frozen (hard snowball) for every S from 0.905 to 1.25, and its
-    surface temperature rises from 235 K to 260 K over that range. The frozen
-    state is held by the ice albedo (0.62), so it persists even where it is the
-    only equilibrium.
-  - At S = 1.27 the cold start jumps to dry steam at about 1420 K with no ocean.
-  - A warm start falls to 277 K at S = 0.91 (temperate, ice 0.03) and to a
-    frozen state at S = 0.905. The loop is entered near 0.906 S0 and left near
-    1.26 S0, with the exit going to dry runaway rather than to temperate.
-  - With CO2 free to evolve, a cold start melts by volcanic build-up. The time
-    to leave hard snowball from 230 K was 1.9 Myr at S = 0.72, 1.0 Myr at 0.9
-    and 0.6 Myr at 1.0 (physics review, not rerun after the final changes).
+  - **Superseded.** The pinned-CO2 window in the previous version of this section
+    (frozen from S 0.905 to 1.25, loop left near 1.26 S0) was measured before the
+    repair round and has not been rerun. It is not a current result.
+  - Re-measured in this round, with CO2 free to evolve (`createState` warm start, and a
+    cold start at 235 K run for 1 Myr at 1000-yr steps):
+
+    | S | warm start | cold start after 1 Myr |
+    |---|---|---|
+    | 0.90 | hard snowball, 235 K | temperate, 312 K (CO2 build-up melts it) |
+    | 0.95 | temperate, 283 K | temperate, 285 K |
+    | 1.00 | temperate, 288 K | temperate, 288 K |
+    | 1.10 | temperate, 309 K | temperate, 299 K |
+    | 1.20 | moist greenhouse, 336 K | moist greenhouse, 333 K |
+    | 1.25–1.30 | none (wet runaway at 300 K) | dry runaway, about 1340–1350 K |
+
+  - The cold snowball is not held at S = 0.9 once CO2 can build up. The dry-runaway
+    temperature at S = 1.25–1.4 is 1284–1321 K after 1.5 Myr, from steam that has lost
+    about 22% of its water (2700 to 2103 m) to escape. This value is unchanged from before.
   - The snowball preset is frozen at 1 Myr and stays in the range 222–247 K.
     Test 4 passes only because the state is hard snowball or slushball.
 
@@ -201,12 +249,30 @@ one step, where energy beyond the remaining liquid is not carried over (section 
   `1.07e13 / 10 W m^-2 = 3.4e4 yr` at a 10 W m^-2 surplus (brief Section 3).
 - Above the critical point (647.1 K) liquid cannot exist. Warming beyond it is
   spent on evaporation and the surface is held at 647.1 K (section 2.7).
-- Vapour from evaporation stays in the column and does not condense back into
-  the ocean. This is a documented simplification with two consequences, both
-  listed in section 7 (deviation 15). Water that leaves the ocean at high
-  temperature cannot return when the planet cools, so dry steam persists, and
-  a cold planet can hold tens to hundreds of bar of vapour. The brief's
-  reversible dry runaway (section 2 of the brief) is not reproduced.
+- **Condensation (deviation 15, resolved).** Vapour above the saturation pressure
+  at the surface temperature, `p_H2O > e_s(Ts)`, condenses into the ocean. Below the
+  critical point the condensate `m` (m OED) and the new surface temperature satisfy
+
+  `p_H2O - m × bg = e_s(Ts + dT(m))`, with `dT(m) = m × 2.5e9 J m^-2 / (C_mix + 4.2e6 × (L + m))`
+
+  where `bg = 0.0981 gf` bar per metre of water column and `L` is the liquid depth.
+  The left side falls and the right side rises with `m`, so bisection gives one root.
+  The latent heat `2.5e9 J m^-2` per metre (the latent part of 3.96e9) warms the
+  surface through the mixed-layer and ocean heat capacity. It is not a separate
+  flux, so the surface is not cooled by the condensate and the energy booking is
+  consistent with the step. A root above 647.1 K is capped there, and the
+  remaining vapour stays in the air. Condensation only moves water between vapour
+  and liquid, so the inventory is unchanged (ledger, section 1).
+- Consequences. Vapour that has left the ocean returns to it when the planet cools
+  below the saturation curve, so an ocean can reform from a dry state (R1b). Cooling
+  steam is slow, because hydrogen escape sets the pace (section 2.10).
+- Ocean area. Where ocean area exists (land below 1), condensate creates the
+  ocean when none was present, and the ice fraction is set to its equilibrium value
+  (R1b). A planet with no ocean area (land = 1) has nowhere to condense, so its
+  vapour stays in the air. None of the presets is in this case with vapour above
+  saturation.
+- Saturation uses the Buck (1996) fit clamped to 370 °C, which gives 147 bar at
+  647 K where the real value is about 220 bar. This is a documented limit (section 7).
 
 ### 2.10 Water escape (moist greenhouse)
 
@@ -215,14 +281,15 @@ one step, where energy beyond the remaining liquid is not carried over (section 
 - Escape time: `tau_H = 1 Gyr × (3e-3 / f)`, scaling as 1/f (brief Game decision 2).
   At 355 K it is 1 Gyr. At 400 K it is about 25 Myr, and at 1600 K steam it is
   about 6 Myr (f capped at 0.5), so steam loses its water within Myr.
-- Liquid and total water both decay at this rate. On the Earth ramp this escape,
-  not a wet runaway, drains the ocean once the planet is in the moist state
+- Liquid and total water both decay at this rate. Escape is slow where the
+  planet is held at the cap near 333–340 K: f ≈ 6e-4 there, so τ_H ≈ 5 Gyr.
+  On the Earth ramp, evaporation at the cap drains the ocean in about 60 Myr, not escape
   (section 7, deviation 1).
 
 ### 2.11 Carbon cycle
 
 `dp_CO2/dt = F_out - F_w`, with `F_w = F_out (p/p_ref)^0.3 exp((Ts' - 288)/13.7) landF weatheringFactor`,
-`landF = clamp(landFraction / 0.29, 0, 3)`, and `Ts' = min(Ts, 330 K)`.
+`landF = min(1, landFraction / 0.01)`, and `Ts' = min(Ts, 330 K)`.
 
 - `F_out = 58e-9 bar yr^-1 × (volcanicTmolYr / 7)`, i.e. 7 Tmol C yr^-1 is 58
   bar per Gyr (brief Section 5).

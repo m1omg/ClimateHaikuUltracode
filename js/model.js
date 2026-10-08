@@ -3,8 +3,9 @@
  *
  * A zero-dimensional energy balance for a terrestrial planet: a mixed layer
  * coupled to a deep ocean, a relaxing sea-ice fraction, a grey-atmosphere
- * outgoing longwave limit with a clear-sky moist cap, a slow carbon cycle and
- * a slow water-escape channel. Physical rates are in planetary years; the
+ * outgoing longwave limit with a clear-sky moist cap, vapour condensation above
+ * saturation, a slow carbon cycle and a slow water-escape channel. Physical rates
+ * are in planetary years; the
  * clock only decides how many years of model time pass per wall second.
  *
  * Equations, calibration targets and deviations are in docs/MODEL.md.
@@ -657,7 +658,7 @@ const ClimateModel = (function () {
         // RUNAWAY_TOL of it (the cap-limited edge). The tolerance stops the
         // label from flipping on differences of a few hundredths of a W m^-2.
         runawayActive: liquid && (F.absorbed > F.cap + RUNAWAY_TOL
-          || (F.g >= F.cap && F.absorbed >= F.cap - RUNAWAY_TOL)),
+          || (F.g >= F.cap - RUNAWAY_TOL && F.absorbed >= F.cap - RUNAWAY_TOL)),
         hot: s.Ts > 373.15,
         hasSteamAtmosphere: !liquid && env.pH2O > 0.1
       }
@@ -683,7 +684,7 @@ const ClimateModel = (function () {
     { id: 'wet_runaway', name: 'Wet runaway',
       summary: 'Absorbed sunlight exceeds the most infrared a moist atmosphere can emit. The surface temperature stalls while the surplus evaporates the ocean.' },
     { id: 'dry_runaway', name: 'Dry runaway (steam)',
-      summary: 'The ocean has evaporated into a thick steam atmosphere. Surface temperature rises until the steam can radiate the absorbed sunlight, near 1500 K.' },
+      summary: 'The ocean has evaporated into a thick steam atmosphere. Surface temperature rises until the steam can radiate the absorbed sunlight, near 1300 K in this model.' },
     { id: 'venus_like', name: 'Venus-like desiccated',
       summary: 'A dense CO2 atmosphere, about 90 bar, with almost no water left. The thick CO2 traps heat, and the surface reaches about 740 K.' },
     { id: 'mars_like', name: 'Mars-like',
@@ -693,7 +694,7 @@ const ClimateModel = (function () {
     { id: 'titan_like', name: 'Titan-like',
       summary: 'A nitrogen atmosphere with methane, cold enough that methane and ethane can pool as liquid. Classification only; the model does not run methane hydrology.' },
     { id: 'waterworld', name: 'Waterworld (hycean)',
-      summary: 'A planet with almost no land and a deep global ocean. Without land there is no weathering, so CO2 is not drawn down.' },
+      summary: 'A planet with almost no land and a deep global ocean. Weathering saturates above 1% land, so a world with 1% land weathers about as fast as Earth. With no land at all there is no weathering, and CO2 is not drawn down.' },
     { id: 'hadean_steam', name: 'Hadean steam',
       summary: 'A young, very hot planet with steam and thick CO2. Surface water is still in vapour form, and the planet cools toward an ocean stage.' }
   ];
@@ -807,7 +808,7 @@ const ClimateModel = (function () {
       blurb: '60% land and a thin 300 m ocean equivalent. Less water means less runaway risk.',
       config: withConfig({ landFraction: 0.6, waterOED_m: 300, evolveStar: false }) },
     { id: 'waterworld', name: 'Waterworld',
-      blurb: 'Almost no land and a deep global ocean. Without land, weathering is nearly absent.',
+      blurb: 'Only 1% land and a deep global ocean. Weathering saturates above 1% land, so this world draws CO2 down about as fast as Earth.',
       config: withConfig({ landFraction: 0.01, waterOED_m: 10000, evolveStar: false }) },
     { id: 'slow_rotator', name: 'Slow rotator (30 days)',
       blurb: 'A 30-day rotation adds a substellar cloud deck that raises albedo and cools the surface.',

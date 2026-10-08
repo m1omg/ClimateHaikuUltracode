@@ -83,17 +83,19 @@ test('7. Gradualness: moist onset (Ts > 330 K) and runaway onset are gradual', (
   assert.ok(runaway !== null && runaway >= 0.5e9, `runaway onset ${gyr(runaway)} Gyr`);
 });
 
-test('8. Step above the runaway threshold: Ts takes over 1000 yr to reach 330 K', () => {
+test('8. Step just above the moist-onset threshold: Ts takes over 1000 yr to reach 330 K', () => {
+  // Changed from S = 1.22 (runaway threshold) when the moist onset moved to S = 1.167
+  // (MODEL.md section 7, deviation 1). The slow approach to 330 K is now at S = 1.18.
   const c = M.defaultConfig();
   c.evolveStar = false;
   const s = M.createState(c);
-  c.S = 1.22; // just above the runaway threshold (about 1.19 in the ramp, MODEL.md section 4)
+  c.S = 1.18;
   let t330 = null;
   for (let i = 0; i < 5000 && t330 === null; i++) {
     M.step(s, c, 1);
     if (s.Ts >= 330) t330 = s.tYears;
   }
-  console.log(`      288 -> 330 K takes ${t330} yr at S = 1.22`);
+  console.log(`      288 -> 330 K takes ${t330} yr at S = 1.18`);
   assert.ok(t330 !== null && t330 > 1000, `time ${t330}`);
 });
 
@@ -291,5 +293,136 @@ test('extra: Clock keeps the time it cannot run in one call', () => {
   assert.equal(n, 2000, 'call hits its step cap');
   assert.ok(Math.abs(s.tYears + clk.acc - 0.25 * yps) < 1e-3 * yps, 'delivered plus pending equals the wall time');
   assert.ok(clk.acc > 0, 'pending time is kept');
+});
+
+// ---- Repair round: condensation, ordering, monotone OLR, saturating weathering
+
+const WATER_LEDGER_TOL = 1e-9;
+
+test('R1a. Dry steam (Earth gases, S = 0.3, from 906 K) cools and recovers liquid water', () => {
+  // Recovery is set by hydrogen escape from the steam (6 Myr e-fold at steam
+  // temperatures), not by 2 Myr as first hoped. MODEL.md section 4 gives the value.
+  const c = Object.assign(M.defaultConfig(), { S: 0.3, evolveStar: false });
+  const s = M.createState(c, { Ts0: 906 });
+  assert.equal(s.oceanDepthM, 0, 'starts dry');
+  let tBelowCritical = null;
+  let tLiquid = null;
+  for (let i = 0; i < 1800 && tLiquid === null; i++) {
+    M.step(s, c, 5000);
+    if (tBelowCritical === null && s.Ts < 647.1) tBelowCritical = s.tYears;
+    if (s.oceanDepthM > 0) tLiquid = s.tYears;
+  }
+  console.log(`      dry steam: below 647 K at ${tBelowCritical} yr, liquid back at ${tLiquid} yr`);
+  assert.ok(tLiquid !== null, 'liquid water returns within 9 Myr');
+  assert.ok(tLiquid <= 8e6, `recovery at ${tLiquid} yr`);
+  assert.ok(s.Ts <= 647.1, `Ts ${s.Ts} at recovery`);
+});
+
+test('R1b. Vapour above saturation condenses into the ocean; the inventory is not changed', () => {
+  const c = Object.assign(M.defaultConfig(), { evolveStar: false, S: 0.3, waterOED_m: 275 });
+  const s = M.createState(c, { Ts0: 1000 }); // steam start
+  s.Ts = 500;
+  s.Td = 500;
+  assert.equal(s.oceanDepthM, 0, 'no ocean at the start');
+  const vapourBefore = M.diagnose(s, c).pH2OBar;
+  assert.ok(vapourBefore > M.satVapourBar(500), `vapour ${vapourBefore} above saturation ${M.satVapourBar(500)}`);
+  M.step(s, c, 1000);
+  const d = M.diagnose(s, c);
+  assert.ok(s.oceanDepthM > 0, 'the condensate forms an ocean where there was none');
+  assert.ok(d.pH2OBar <= M.satVapourBar(s.Ts) * (1 + 1e-6), `vapour ${d.pH2OBar} above saturation at ${s.Ts} K`);
+  assert.ok(Math.abs(s.waterOED + s.escapedOED - 275) <= WATER_LEDGER_TOL * 275, 'inventory unchanged by condensation');
+});
+
+test('R1c. Water budget over 100 kyr: inventory changes only by the escape ledger', () => {
+  // Condensation and evaporation are transfers between vapour and liquid, so
+  // waterOED + escapedOED must stay at the initial inventory.
+  const c = Object.assign(M.defaultConfig(), { evolveStar: false, S: 0.3, waterOED_m: 275 });
+  const s = M.createState(c, { Ts0: 1000 });
+  s.Ts = 500;
+  s.Td = 500;
+  const W0 = 275;
+  for (let i = 0; i < 100; i++) M.step(s, c, 1000);
+  assert.ok(s.escapedOED > 0, 'escape acted over 100 kyr at steam temperatures');
+  assert.ok(Math.abs(s.waterOED + s.escapedOED - W0) <= WATER_LEDGER_TOL * W0,
+    `budget ${s.waterOED} + ${s.escapedOED} vs ${W0}`);
+  assert.ok(s.oceanDepthM >= 0 && s.oceanDepthM <= s.waterOED + 1e-9, 'liquid within the inventory');
+});
+
+test('R1d. No hydrogen loss at surface temperatures near 288 K: budget closes and escape is under 0.1%', () => {
+  const c = M.defaultConfig();
+  const s = M.createState(c);
+  const W0 = c.waterOED_m;
+  for (let i = 0; i < 100; i++) M.step(s, c, 1000);
+  assert.ok(s.escapedOED / W0 < 1e-3, `escape ${s.escapedOED} m of ${W0} m`);
+  assert.ok(Math.abs(s.waterOED + s.escapedOED - W0) <= WATER_LEDGER_TOL * W0, 'budget closes');
+});
+
+test('R2a. Moist onset (Ts reaches 330 K) comes before the cap binds on a solar ramp', () => {
+  const c = M.defaultConfig();
+  c.evolveStar = false;
+  const s = M.createState(c);
+  // At 330 K with liquid, the grey OLR is below the cap, so the cap is not yet binding.
+  const d330 = M.diagnose(Object.assign({}, s, { Ts: 330, Td: 330, iceFraction: 0 }), c);
+  assert.ok(d330.olrWm2 < d330.olrCapWm2 - 1, `OLR at 330 K ${d330.olrWm2} vs cap ${d330.olrCapWm2}`);
+  let moist = null;
+  let run = null;
+  for (let i = 0; i < 2000 && (moist === null || run === null); i++) {
+    c.S = 1 + 1e-6 * s.tYears;
+    M.step(s, c, 500);
+    if (moist === null && s.Ts >= 330) moist = c.S;
+    if (run === null && s.oceanDepthM > 0 && M.diagnose(s, c).flags.runawayActive) run = c.S;
+  }
+  console.log(`      solar ramp (1e-6 per yr, carbon cycle on): moist onset S = ${moist}, runaway onset S = ${run}`);
+  assert.ok(moist !== null && run !== null, 'both onsets occur');
+  assert.ok(moist < run, `moist onset S ${moist} must precede runaway onset S ${run}`);
+});
+
+test('R2b. Calibration: Earth 288 K and 239-242 W m^-2, Mars 214-225 K, Venus 737 +/- 10 K', () => {
+  const ce = M.defaultConfig();
+  const de = M.diagnose(M.createState(ce), ce);
+  assert.ok(Math.abs(de.Ts - 288) <= 1, `Earth Ts ${de.Ts}`);
+  assert.ok(de.olrWm2 >= 239 && de.olrWm2 <= 242, `Earth OLR ${de.olrWm2}`);
+  const cm = preset('mars');
+  const dm = M.diagnose(M.createState(cm), cm);
+  assert.ok(dm.Ts >= 214 && dm.Ts <= 225, `Mars Ts ${dm.Ts}`);
+  const cv = preset('venus');
+  const dv = M.diagnose(M.createState(cv), cv);
+  assert.ok(Math.abs(dv.Ts - 737) <= 10, `Venus Ts ${dv.Ts}`);
+});
+
+test('R3. OLR is non-decreasing in Ts from 150 to 2000 K, with one balance point above 520 K', () => {
+  const cases = [];
+  const earth = Object.assign(M.defaultConfig(), { evolveStar: false, S: 1.0 });
+  cases.push(['Earth gases with liquid', M.createState(earth), earth]);
+  const steam = Object.assign(M.defaultConfig(), { evolveStar: false, S: 0.3 });
+  cases.push(['steam, no liquid', M.createState(steam, { Ts0: 1200 }), steam]);
+  const venus = preset('venus');
+  cases.push(['thick CO2 (Venus)', M.createState(venus), venus]);
+  for (const [name, st, cfg] of cases) {
+    const e = M.energyCurve(st, cfg, 3001);
+    for (let i = 1; i < e.olr.length; i++) {
+      assert.ok(e.olr[i] - e.olr[i - 1] >= -1e-9, `${name}: OLR falls at ${e.Ts[i]} K (${e.olr[i - 1]} -> ${e.olr[i]})`);
+    }
+    let changes = 0;
+    for (let i = 1; i < e.olr.length; i++) {
+      if (e.Ts[i] < 520) continue;
+      const a = e.olr[i - 1] - e.absorbedWm2;
+      const b = e.olr[i] - e.absorbedWm2;
+      if ((a < 0) !== (b < 0)) changes++;
+    }
+    assert.ok(changes <= 1, `${name}: ${changes} balance crossings above 520 K`);
+  }
+});
+
+test('R4. Weathering saturates above 1% land: identical for land 0.05 and 0.29; Earth factor is 1', () => {
+  const base = M.defaultConfig();
+  for (const TK of [288, 300, 320, 340]) {
+    const a = M.weatheringFactorAt(Object.assign({}, base, { landFraction: 0.05 }), TK, true);
+    const b = M.weatheringFactorAt(Object.assign({}, base, { landFraction: 0.29 }), TK, true);
+    assert.equal(a, b, `weathering at ${TK} K`);
+  }
+  assert.equal(M.weatheringFactorAt(base, 288, true), 1, 'Earth reference');
+  assert.ok(M.weatheringFactorAt(Object.assign({}, base, { landFraction: 0.005 }), 288, true) < 1, 'below 1% land');
+  assert.equal(M.weatheringFactorAt(base, 288, false), 0, 'no weathering without liquid');
 });
 

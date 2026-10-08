@@ -74,23 +74,27 @@ slowly in a moist atmosphere, on Gyr timescales.
 Caveats:
 
 - The model has no latitude structure and no heat transport. Cloud feedback is not represented.
-- Water vapour does not condense back into the ocean. A planet that has lost water
-  to the air keeps it when it cools, and dry steam persists. This is the largest
-  known gap (`docs/MODEL.md`, section 7, deviation 15).
-- Above about 520 K the grey outgoing infrared falls for a wet planet, so the
-  energy chart shows a second crossing (deviation 16).
-- Weathering is held at its 330 K value above 330 K and scales linearly with
-  land area (section 2.11). Both are game choices and are documented.
+- Vapour above saturation condenses back into the ocean, with its latent heat.
+  Recovery from dry steam is still slow: at S = 0.3 from 906 K, liquid returns after
+  about 7 Myr, because hydrogen escape from the steam sets the pace
+  (`docs/MODEL.md`, section 7, deviation 15).
+- Over liquid, the grey water opacity is held fixed above 0.1 bar, so the outgoing
+  infrared never falls with temperature. The energy chart has one balance point
+  there, and the cap sets the temperature in the runaway (deviation 16).
+- Weathering is held at its 330 K value above 330 K. It saturates above 1% land
+  (section 2.11), so a world with 1% land weathers about as fast as Earth. Both are
+  game choices and are documented.
 - The grey optical depth and the thick-CO2 term are calibrated fits, not line-by-line
   radiation. Calibration constants and their basis are listed in `docs/MODEL.md`.
-- With these choices the runaway onset sits near 1.19 times the present sunlight and the
-  moist-greenhouse onset near 1.20. These are higher than the 1-D estimates and at the
-  upper end of the 3-D range.
+- With these choices the moist-greenhouse onset sits near 1.17 times the present
+  sunlight and the runaway onset near 1.20. These are higher than the 1-D estimates and
+  just above the 3-D range (1.10–1.19).
 - With Earth gases the cold, frozen state stays stable over a wide range of
   sunlight (about 0.905 to 1.25 times the present), so the starting state can decide
   the outcome (section 2.8).
-- The runaway and moist onsets come in the opposite order to the brief's
-  expected sequence. This is discussed in `docs/MODEL.md`, section 7.
+- The moist onset comes before the runaway onset, as in the brief, but the gap is
+  only about 0.04 times the present sunlight. The brief's gap is 0.4–0.9 Gyr
+  (`docs/MODEL.md`, section 7, deviation 1).
 - Some climate states are classified from the model's output but their physics is
   not simulated (Titan-like hydrocarbons, hycean ice layers, eyeball geometry,
   hadean magma oceans). See `docs/MODEL.md`, section 5.
