@@ -5,18 +5,19 @@
  * read the state and never change it.
  *
  * Clock details:
- *  - Wall time from each frame is clamped, then added to a "debt" that is spent in
- *    slices of at most CHUNK_S. Each slice ends exactly on the next history sample
- *    time, so the sample times depend only on simulated time, not on frame timing.
- *  - Spending stops after BUDGET_MS of model work per frame. Unspent debt is capped at
- *    DEBT_CAP_S, so a slow device runs below the chosen speed instead of falling behind.
- *    The trajectory against simulated time is the same either way.
+ *  - Each frame's wall time is clamped to WALL_CLAMP_S (no catch-up after a stall).
+ *    It is spent in slices of at most CHUNK_S. Each slice ends exactly on the next
+ *    history sample time, so the sample times depend only on simulated time.
+ *  - Spending stops after BUDGET_MS of model work per frame. Wall time not spent in
+ *    that frame is dropped, so a slow device runs below the chosen speed instead of
+ *    falling behind. The trajectory against simulated time is the same either way.
+ *  - Simulated time passed to the clock but not yet run (clock.acc) is kept, never
+ *    discarded, including across speed changes.
  */
 (function () {
   'use strict';
 
   const WALL_CLAMP_S = 0.25;    // largest wall-clock delta accepted for one frame
-  const DEBT_CAP_S = 0.1;       // wall time carried into later frames, at most
   const CHUNK_S = 0.002;        // wall slice per Clock.advance call
   const BUDGET_MS = 12;         // model time allowed per frame
   const TICKS_PER_S = 30;       // fixed-rate ticks that drive twinkling (matches render.js)
@@ -34,7 +35,6 @@
   let history = null;
   let speedIndex = DEFAULT_SPEED;
   let paused = false;
-  let wallDebt = 0;
   let ratio = 1;
   let ratioWall = 0;
   let ratioSim = 0;
@@ -57,9 +57,10 @@
     return state.tYears + clock.acc;
   }
 
-  function snapshot() {
+  // Values at the current model state, stamped with the grid time t.
+  function snapshot(t) {
     return {
-      t: state.tYears,
+      t: t,
       Ts: state.Ts,
       depth: state.oceanDepthM,
       co2: state.co2Bar,
@@ -70,17 +71,16 @@
   function resetRun() {
     state = M.createState(config);
     clock = M.Clock.create();
-    history = { samples: [snapshot()], interval: 1, next: 1 };
-    wallDebt = 0;
+    history = { samples: [snapshot(0)], interval: 1, next: 1 };
     ratio = 1;
     ratioWall = 0;
     ratioSim = 0;
   }
 
-  // Store one sample at the grid point clockT. When the buffer is full, keep every other
-  // sample and double the spacing, so the history always spans the whole run.
+  // Store one sample at the grid point history.next. When the buffer is full, keep every
+  // other sample and double the spacing, so the history always spans the whole run.
   function recordSample(clockT) {
-    history.samples.push(snapshot());
+    history.samples.push(snapshot(history.next));
     if (history.samples.length >= HISTORY_CAP) {
       history.samples = history.samples.filter(function (s, i) { return i % 2 === 0; });
       history.interval *= 2;
@@ -91,12 +91,12 @@
   }
 
   function advance(wall) {
-    wallDebt = Math.min(wallDebt + wall, DEBT_CAP_S);
     const yps = speedYps();
     const before = clockTime();
     const budgetEnd = performance.now() + BUDGET_MS;
+    let left = wall;
     let guard = 0;
-    while (wallDebt > 1e-12 && guard++ < 1e6) {
+    while (left > 1e-12 && guard++ < 1e6) {
       const clockT = clockTime();
       const gap = history.next - clockT;
       if (gap <= 1e-9 * Math.max(1, history.next)) {
@@ -104,10 +104,11 @@
         continue;
       }
       if (performance.now() >= budgetEnd) break;
-      const w = Math.min(wallDebt, CHUNK_S, gap / yps);
+      const w = Math.min(left, CHUNK_S, gap / yps);
       M.Clock.advance(clock, w, yps, state, config);
-      wallDebt -= w;
+      left -= w;
     }
+    // Wall time left over here is dropped: the budget decides what is not run.
     // Share of the selected speed actually run, measured over half-second windows.
     ratioWall += wall;
     ratioSim += clockTime() - before;
@@ -120,10 +121,7 @@
 
   function setSpeed(i) {
     speedIndex = clamp(i, 0, U.SPEEDS.length - 1);
-    // A speed-up or slow-down can leave more accumulated time than the new sub-step
-    // can run in one call. Keep at most one sub-step of it.
-    const dt = M.stepSizeForSpeed(speedYps());
-    if (clock.acc > dt) clock.acc = dt;
+    // Time already passed to the clock stays in clock.acc and runs at the new speed.
     ratio = 1;
     ratioWall = 0;
     ratioSim = 0;
@@ -131,7 +129,6 @@
 
   function togglePause() {
     paused = !paused;
-    wallDebt = 0;
   }
 
   function applyPreset(id) {
@@ -155,15 +152,22 @@
   };
 
   // Keys: space pauses, minus and plus change speed, R resets, 1 to 9 pick presets, H toggles help.
+  // Focused controls keep their own keys: buttons, summaries and selects keep space; a focused
+  // slider or select does not also apply a preset on a digit key. Plus and minus always work.
   function onKey(e) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const t = e.target || {};
     const tag = t.tagName || '';
-    if (tag === 'SELECT' || tag === 'TEXTAREA') return;
-    if (tag === 'INPUT' && t.type !== 'range') return;
-    if (tag === 'BUTTON' && (e.key === ' ' || e.key === 'Enter')) return;
     const k = e.key;
-    if (k === ' ' || k === 'Spacebar') {
+    const isSpace = k === ' ' || k === 'Spacebar';
+    const isDigit = /^[1-9]$/.test(k);
+    if (tag === 'TEXTAREA') return;
+    if (tag === 'INPUT' && t.type !== 'range') return;
+    if ((tag === 'BUTTON' || tag === 'SUMMARY' || tag === 'SELECT') && isSpace) return;
+    if (tag === 'BUTTON' && k === 'Enter') return;
+    if (tag === 'SELECT' && !(k === '-' || k === '_' || k === '+' || k === '=')) return;
+    if ((tag === 'INPUT' || tag === 'SELECT') && isDigit) return;
+    if (isSpace) {
       e.preventDefault();
       togglePause();
     } else if (k === '-' || k === '_') {
@@ -174,7 +178,7 @@
       resetRun();
     } else if (k === 'h' || k === 'H') {
       toggleHelp();
-    } else if (/^[1-9]$/.test(k)) {
+    } else if (isDigit) {
       const p = M.PRESETS[Number(k) - 1];
       if (p) applyPreset(p.id);
     }
@@ -196,7 +200,8 @@
       const diag = M.diagnose(state, config);
       const energy = M.energyCurve(state, config, ENERGY_POINTS);
       R.draw(diag, state, config, history, {
-        energy: energy, ticks: ticks, motion: motion, reducedMotion: reducedMotion
+        energy: energy, ticks: ticks, motion: motion, reducedMotion: reducedMotion,
+        simTime: clockTime()
       });
       U.update(diag, state, config, history, {
         paused: paused, yearsPerSecond: speedYps(), ratio: ratio

@@ -1,5 +1,5 @@
 'use strict';
-// Tests for js/model.js. Run with: node --test tests/
+// Tests for js/model.js. Run with: npm test (or node --test tests/).
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const M = require('../js/model.js');
@@ -87,7 +87,7 @@ test('8. Step above the runaway threshold: Ts takes over 1000 yr to reach 330 K'
   const c = M.defaultConfig();
   c.evolveStar = false;
   const s = M.createState(c);
-  c.S = 1.22; // just above the runaway threshold (about 1.21 in the ramp)
+  c.S = 1.22; // just above the runaway threshold (about 1.19 in the ramp, MODEL.md section 4)
   let t330 = null;
   for (let i = 0; i < 5000 && t330 === null; i++) {
     M.step(s, c, 1);
@@ -220,3 +220,76 @@ test('extra: editConfig resets gas and water state immediately', () => {
   assert.equal(s.waterOED, 500);
   assert.equal(c.S, 1.1);
 });
+
+test('extra: surface temperature stays physical at the API step size (5000 yr)', () => {
+  const c = Object.assign(M.defaultConfig(), { S: 0.2, co2Bar: 90, waterOED_m: 300, massEM: 0.1, rotationDays: 30, evolveStar: false });
+  const s = M.createState(c);
+  const ts0 = s.Ts;
+  M.step(s, c, 5000);
+  assert.ok(Math.abs(s.Ts - ts0) < 5, `one step moved Ts from ${ts0} to ${s.Ts}`);
+  assert.ok(s.co2Bar > 10, `CO2 ${s.co2Bar} fell within one step`);
+  for (let i = 0; i < 200; i++) {
+    M.step(s, c, 5000);
+    assert.ok(Number.isFinite(s.Ts) && s.Ts >= 2 && s.Ts <= 3000, `Ts ${s.Ts} at ${s.tYears} yr`);
+  }
+});
+
+test('extra: the time passed to step equals the requested time (no silent loss)', () => {
+  const c = Object.assign(M.defaultConfig(), { S: 0.2, co2Bar: 90, waterOED_m: 300, massEM: 0.1, rotationDays: 1, evolveStar: false });
+  const s = M.createState(c);
+  M.step(s, c, 1e6);
+  assert.ok(Math.abs(s.tYears - 1e6) < 1e-6, `advanced ${s.tYears} yr`);
+});
+
+test('extra: wet runaway and moist greenhouse do not alternate near the cap', () => {
+  const c = Object.assign(M.defaultConfig(), { S: 1.5, co2Bar: 0.3, waterOED_m: 25000, massEM: 0.1, rotationDays: 30, evolveStar: false });
+  const s = M.createState(c);
+  let last = null;
+  let flips = 0;
+  for (let i = 0; i < 4000; i++) {
+    M.step(s, c, 50);
+    if (s.tYears < 2000 || s.tYears > 2800) continue;
+    const id = M.diagnose(s, c).state.id;
+    if (last !== null && id !== last && (id === 'wet_runaway' || last === 'wet_runaway')) flips++;
+    last = id;
+  }
+  assert.equal(flips, 0);
+});
+
+test('extra: no sea ice on a planet without liquid water', () => {
+  const c = Object.assign(M.defaultConfig(), { S: 1.0, evolveStar: false, waterOED_m: 0 });
+  const s = M.createState(c);
+  assert.equal(s.iceFraction, 0);
+  const landOnly = Object.assign(M.defaultConfig(), { landFraction: 0, S: 1.0, evolveStar: false, waterOED_m: 0 });
+  const sl = M.createState(landOnly);
+  const d = M.diagnose(sl, landOnly);
+  assert.ok(d.albedo < 0.3, `albedo ${d.albedo} with no ocean`);
+  assert.equal(d.iceFraction, 0);
+});
+
+test('extra: the snowball preset starts in radiative balance', () => {
+  const c = preset('snowball');
+  const d = M.diagnose(M.createState(c), c);
+  assert.ok(Math.abs(d.netWm2) < 0.5, `net ${d.netWm2} W m^-2 at the start`);
+  assert.ok(d.iceFraction > 0.9, `ice ${d.iceFraction}`);
+});
+
+test('extra: non-physical inputs stay finite', () => {
+  const c = Object.assign(M.defaultConfig(), { co2Bar: -0.001, massEM: 0 });
+  const s = M.createState(c);
+  M.step(s, c, 1000);
+  const d = M.diagnose(s, c);
+  assert.ok(Number.isFinite(s.Ts) && Number.isFinite(d.surfacePressureBar));
+});
+
+test('extra: Clock keeps the time it cannot run in one call', () => {
+  const c = M.defaultConfig();
+  const s = M.createState(c);
+  const clk = M.Clock.create();
+  const yps = 1e9;
+  const n = M.Clock.advance(clk, 0.25, yps, s, c);
+  assert.equal(n, 2000, 'call hits its step cap');
+  assert.ok(Math.abs(s.tYears + clk.acc - 0.25 * yps) < 1e-3 * yps, 'delivered plus pending equals the wall time');
+  assert.ok(clk.acc > 0, 'pending time is kept');
+});
+

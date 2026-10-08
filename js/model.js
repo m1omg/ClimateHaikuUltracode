@@ -37,10 +37,14 @@ const ClimateModel = (function () {
   const TAU_H2O_LOSS_REF_YR = 1e9;   // water-escape time at the reference stratospheric fraction
   const F_STRAT_REF = 3e-3;          // reference stratospheric water fraction (about 355 K)
   const MAX_SUB_YR = 5000;           // largest internal step (years)
-  const LAMBDA_TRUST = 0.5;          // W m^-2 K^-1 below which the feedback is too weak to trust a long step
-  const MAX_DT_K = 3;                // K, largest temperature change per step when the feedback is weak
+  const MIN_SUB_YR = 0.5;            // smallest internal step (years)
+  const MAX_DT_K = 3;                // K, largest predicted surface change per internal step
+  const TS_FLOOR = 2;                // K, numerical floor on Ts and Td (never reached by the physics)
+  const WEATHER_T_MAX = 330;         // K, the weathering temperature factor is held at its 330 K value above this
+  const RUNAWAY_TOL = 1;             // W m^-2, absorbed flux must exceed the cap by this much for a runaway label
   const MAX_FRAME_S = 0.25;          // wall-clock clamp per advance call
   const MAX_STEPS_PER_CALL = 2000;
+  const MIN_MASS_EM = 0.01;          // Earth masses, lower bound used to keep the radius law finite
   const AVAIL = 0.8;                 // near-surface vapour relative to saturation over open water
   const ALB_OCEAN = 0.07;
   const ALB_LAND = 0.25;
@@ -79,8 +83,9 @@ const ClimateModel = (function () {
   // Zeng et al. (2016) mass-radius law. gf = M/R^4 converts a bar inventory
   // (bar at Earth gravity) into a surface partial pressure.
   function geometry(c) {
-    const R = (1.07 - 0.21 * c.coreMassFraction) * Math.pow(c.massEM, 0.27);
-    return { R: R, g: c.massEM / (R * R), gf: c.massEM / Math.pow(R, 4) };
+    const m = Math.max(c.massEM, MIN_MASS_EM);
+    const R = (1.07 - 0.21 * c.coreMassFraction) * Math.pow(m, 0.27);
+    return { R: R, g: m / (R * R), gf: m / Math.pow(R, 4) };
   }
 
   const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
@@ -103,12 +108,12 @@ const ClimateModel = (function () {
   // pressure over the open ocean times an availability factor, limited by the
   // water inventory. Without liquid, all water is vapour (steam or trace).
   function vapourBar(s, c, geo, TK, liquid) {
-    const wBar = s.waterOED * BAR_PER_M_WATER * geo.gf;
+    const wBar = Math.max(s.waterOED, 0) * BAR_PER_M_WATER * geo.gf;
     if (!liquid) return wBar;
     // Near-surface vapour is saturated over the open ocean. Water already
     // evaporated stays in the air, so the column is at least that large.
     const open = (1 - c.landFraction) * (1 - s.iceFraction);
-    const evaporated = (s.waterOED - s.oceanDepthM) * BAR_PER_M_WATER * geo.gf;
+    const evaporated = Math.max(s.waterOED - s.oceanDepthM, 0) * BAR_PER_M_WATER * geo.gf;
     return Math.min(Math.max(satVapourBar(TK) * open * AVAIL, evaporated), wBar);
   }
 
@@ -131,8 +136,8 @@ const ClimateModel = (function () {
   function envAt(s, c, geo, TK, liquid) {
     const gf = geo.gf;
     const p = {
-      co2: s.co2Bar * gf, ch4: s.ch4Bar * gf, n2: s.n2Bar * gf,
-      o2: s.o2Bar * gf, h2: s.h2Bar * gf
+      co2: Math.max(s.co2Bar, 0) * gf, ch4: Math.max(s.ch4Bar, 0) * gf, n2: Math.max(s.n2Bar, 0) * gf,
+      o2: Math.max(s.o2Bar, 0) * gf, h2: Math.max(s.h2Bar, 0) * gf
     };
     const pH2O = vapourBar(s, c, geo, TK, liquid);
     const tau = greyTau(p, pH2O);
@@ -161,10 +166,11 @@ const ClimateModel = (function () {
     return ROT_CLOUD_MAX * smoothstep(5, 20, P);
   }
 
+  // Sea ice exists only where there is liquid ocean; without it the ice term is zero.
   function albedoOf(s, c, liquid, pH2O) {
     const land = c.landFraction;
     const open = 1 - land;
-    const f = s.iceFraction;
+    const f = liquid ? s.iceFraction : 0;
     const aOpen = liquid ? ALB_OCEAN : ALB_LAND;
     let a = land * ALB_LAND + open * ((1 - f) * aOpen + f * ALB_ICE);
     a += CLOUD_MAX * pH2O / (pH2O + CLOUD_HALF_BAR);
@@ -258,51 +264,66 @@ const ClimateModel = (function () {
     };
   }
 
-  // Two passes of linearisation: the feedback and cap are evaluated at the
-  // predicted end-of-step temperature on the second pass.
+  // Two passes of linearisation: the feedback and forcing are evaluated at the
+  // start temperature, then at the predicted end temperature. The evaporation
+  // branch is chosen once, from the state's own flux at the start of the step.
+  // If the cap binds (g >= cap) and absorbed sunlight exceeds it, the surplus
+  // absorbed - cap is spent on evaporation and the mixed layer does not heat.
+  // The booked evaporation and the thermal solve use the same flux, so energy
+  // is accounted for consistently within the step.
   function thermal(s, c, geo, h, Seff) {
     const dtS = h * YEAR_S;
     const liquid = s.oceanDepthM > 0;
     const Cd = Math.max(WATER_HEAT_PER_M * s.oceanDepthM, 1e6);
     const K = liquid ? Cd / (TAU_DEEP_YR * YEAR_S) : 0;
+    const F0 = fluxes(s, c, geo, s.Ts, Seff, liquid);
+    const pinned = liquid && F0.g >= F0.cap && F0.absorbed > F0.cap;
+    let evap = pinned ? F0.absorbed - F0.cap : 0;
     let Tg = s.Ts;
     let res = null;
-    let evap = 0;
     for (let pass = 0; pass < 2; pass++) {
       const F = fluxes(s, c, geo, Tg, Seff, liquid);
       const lam = olrAt(s, c, geo, Tg + 0.5, Seff, liquid) - olrAt(s, c, geo, Tg - 0.5, Seff, liquid);
-      let N0 = F.absorbed - F.olr;
-      evap = 0;
-      // Wet runaway: the cap binds and surplus energy is spent on evaporation,
-      // so the mixed layer does not heat.
-      if (liquid && F.g >= F.cap && N0 > 0) {
-        evap = N0;
-        N0 = 0;
-      }
+      const N0 = pinned ? 0 : F.absorbed - F.olr;
       res = propagate(s.Ts, s.Td, lam, N0, Tg, dtS, K, Cd);
       Tg = res.Tm;
     }
-    // Liquid cannot exist above the critical point: any warming beyond it is
-    // spent on evaporating the ocean, so the surface is held at CRITICAL_T.
+    // Liquid cannot exist above the critical point. A step that predicts a
+    // higher temperature is held at CRITICAL_T, and the flux surplus there is
+    // spent on evaporation. Booking it from the flux, not from the overshoot of
+    // the linear solve, keeps the evaporation rate independent of the step length.
     let Ts = res.Tm;
     if (liquid && Ts > CRITICAL_T) {
-      evap += (Ts - CRITICAL_T) * (C_MIX + Cd) / dtS;
+      const Fc = fluxes(s, c, geo, CRITICAL_T, Seff, liquid);
+      evap += Math.max(Fc.absorbed - Fc.olr, 0);
       Ts = CRITICAL_T;
     }
     const net = fluxes(s, c, geo, Ts, Seff, liquid).net;
     return { Ts: Ts, Td: res.Td, evap: evap, net: net };
   }
 
-  // One internal step of h years (h <= MAX_SUB_YR, and short enough that any
-  // unstable feedback is resolved).
-  function substep(s, c, geo, h) {
-    const Seff = effectiveFlux(c, s.tYears + 0.5 * h);
-    const th = thermal(s, c, geo, h, Seff);
+  // One internal step of at most h0 years. The step is halved while either
+  // (a) the predicted surface change exceeds MAX_DT_K, so the linear solve is
+  // only used over changes it can represent, or (b) evaporation would remove
+  // more than half the liquid, so the drain is resolved rather than skipped.
+  // The thermal solve is pure, so trial results are applied only once accepted.
+  // Returns the time taken.
+  function substep(s, c, geo, h0) {
+    const trial = (hh) => thermal(s, c, geo, hh, effectiveFlux(c, s.tYears + 0.5 * hh));
+    let h = h0;
+    let th = trial(h);
+    const tooFast = (t, hh) => Math.abs(t.Ts - s.Ts) > MAX_DT_K
+      || t.evap * hh * YEAR_S / EVAP_J_PER_M > 0.5 * s.oceanDepthM;
+    while (h > MIN_SUB_YR && tooFast(th, h)) {
+      h = Math.max(MIN_SUB_YR, 0.5 * h);
+      th = trial(h);
+    }
     const liquidBefore = s.oceanDepthM > 0;
-    s.Ts = th.Ts;
-    s.Td = th.Td;
+    s.Ts = Math.max(th.Ts, TS_FLOOR);
+    s.Td = Math.max(th.Td, TS_FLOOR);
 
-    const fe = iceEquilibrium(s.Ts);
+    // Sea ice relaxes toward its equilibrium only where there is liquid ocean.
+    const fe = liquidBefore ? iceEquilibrium(s.Ts) : 0;
     s.iceFraction = fe + (s.iceFraction - fe) * Math.exp(-h / TAU_ICE_YR);
 
     // Evaporation removes liquid; escape removes water (liquid and vapour) at
@@ -318,6 +339,25 @@ const ClimateModel = (function () {
     const dCO2 = co2Step(s, c, geo, h, liquidBefore || L > 0);
     s.tYears += h;
     s.last = { netWm2: th.net, evapWm2: th.evap, carbonRatio: dCO2.ratio };
+    return h;
+  }
+
+  // Weathering factor (dimensionless): land area, the weathering-strength
+  // multiplier and exp((Ts - 288)/13.7). Ts is held at WEATHER_T_MAX above that
+  // temperature, because the fit is not calibrated higher (MODEL.md 2.11).
+  // Zero without liquid water.
+  function weatheringFactor(s, c, wet) {
+    if (!wet) return 0;
+    const landF = clamp(c.landFraction / LAND_REF, 0, 3);
+    const tEff = Math.min(s.Ts, WEATHER_T_MAX);
+    const tFac = Math.exp(clamp((tEff - 288) / WEATHER_E_K, -50, 50));
+    return landF * c.weatheringFactor * tFac;
+  }
+
+  // Weathering over outgassing, (F_w / F_out). 1 is carbonate balance.
+  function carbonRatio(s, c, geo, wet) {
+    const p = Math.max(s.co2Bar * geo.gf, 1e-12);
+    return weatheringFactor(s, c, wet) * Math.pow(p / P_CO2_REF, WEATHER_EXP);
   }
 
   // Carbon cycle: dp/dt = F_out - F_w with F_w = F_out (p/p_ref)^0.3 exp((Ts-288)/13.7) land weathering.
@@ -325,9 +365,7 @@ const ClimateModel = (function () {
   function co2Step(s, c, geo, h, wet) {
     const gf = geo.gf;
     const G = FOUT_BAR_PER_YR * (c.volcanicTmolYr / 7) * gf;
-    const landF = clamp(c.landFraction / LAND_REF, 0, 3);
-    const tFac = Math.exp(clamp((s.Ts - 288) / WEATHER_E_K, -50, 50));
-    const wf = wet ? landF * c.weatheringFactor * tFac : 0;
+    const wf = weatheringFactor(s, c, wet);
     const K = wf * G / Math.pow(P_CO2_REF, WEATHER_EXP);
     const p0 = Math.max(s.co2Bar * gf, 1e-12);
     const c0 = K * Math.pow(p0, WEATHER_EXP);
@@ -343,36 +381,25 @@ const ClimateModel = (function () {
     }
     p = Math.max(p, 0);
     s.co2Bar = p / gf;
-    const ratio = wf * Math.pow(Math.max(p, 1e-12) / P_CO2_REF, WEATHER_EXP);
-    return { ratio: ratio };
+    return { ratio: carbonRatio(s, c, geo, wet) };
   }
 
-  // Advance by dtYears. Long steps are split so that no internal step exceeds
-  // MAX_SUB_YR, and so that a negative feedback rate times the step stays small.
+  // Advance by dtYears. Each internal step is at most MAX_SUB_YR. A step that
+  // would move Ts by more than MAX_DT_K is shortened inside substep, so the
+  // remaining time is always advanced, and none is dropped.
   function step(state, config, dtYears) {
     const geo = geometry(config);
     let remaining = dtYears;
-    let guard = 0;
-    while (remaining > 1e-12 && guard < 1e6) {
-      guard++;
+    while (remaining > 1e-12) {
       let h = Math.min(remaining, MAX_SUB_YR);
       const liquid = state.oceanDepthM > 0;
       const Seff = effectiveFlux(config, state.tYears);
       const lam = olrAt(state, config, geo, state.Ts + 0.5, Seff, liquid)
         - olrAt(state, config, geo, state.Ts - 0.5, Seff, liquid);
-      // Where the feedback is weak or negative (cap binding, near a fold), the
-      // linear solve is only trusted for a few kelvin per step.
-      const liquidCap = liquid ? Math.max(WATER_HEAT_PER_M * state.oceanDepthM, 1e6) : 0;
-      const Ceff = C_MIX + liquidCap;
-      const net = Math.abs(fluxes(state, config, geo, state.Ts, Seff, liquid).net);
-      if (lam < 0) {
-        h = Math.min(h, Math.max(0.5, 2 * C_MIX / (-lam * YEAR_S)));
-      }
-      if (lam < LAMBDA_TRUST && net > 0) {
-        h = Math.min(h, Math.max(0.5, MAX_DT_K * Ceff / (net * YEAR_S)));
-      }
-      substep(state, config, geo, h);
-      remaining -= h;
+      // A negative feedback (possible where OLR falls with Ts) is only stepped
+      // stably with a short step. The linear solve itself ignores it.
+      if (lam < 0) h = Math.min(h, Math.max(MIN_SUB_YR, 2 * C_MIX / (-lam * YEAR_S)));
+      remaining -= substep(state, config, geo, h);
     }
   }
 
@@ -403,16 +430,29 @@ const ClimateModel = (function () {
     'ageGyr', 'rotationDays', 'cloudOffset', 'volcanicTmolYr', 'weatheringFactor'];
 
   // Apply a user change. Gas inventories and the water inventory also reset
-  // the matching state values at once.
+  // the matching state values at once. Inputs are kept physical: inventories
+  // and flux are non-negative, and the mass has a small positive floor.
   function editConfig(state, config, patch) {
     Object.keys(patch || {}).forEach(function (k) {
-      const v = patch[k];
+      let v = patch[k];
       if (PLANET_KEYS.indexOf(k) >= 0) {
+        if (k === 'massEM') v = Math.max(v, MIN_MASS_EM);
+        if (k === 'S') v = Math.max(v, 0);
         config[k] = v;
+        // No ocean area means no liquid, as in createState. Restoring ocean
+        // area returns the full inventory as liquid if the planet is cold enough.
+        if (k === 'landFraction') {
+          if (v >= 1) state.oceanDepthM = 0;
+          else if (state.oceanDepthM === 0 && config.waterOED_m > 0 && state.Ts < CRITICAL_T) {
+            state.oceanDepthM = state.waterOED;
+          }
+        }
       } else if (GAS_KEYS.indexOf(k) >= 0) {
+        v = Math.max(v, 0);
         config[k] = v;
         state[k] = v;
       } else if (k === 'waterOED_m') {
+        v = Math.max(v, 0);
         config.waterOED_m = v;
         state.waterOED = v;
         state.oceanDepthM = (config.landFraction < 1 && state.Ts < CRITICAL_T) ? v : 0;
@@ -421,13 +461,17 @@ const ClimateModel = (function () {
   }
 
   // ---- Initial state -----------------------------------------------------
-  // Scan for the first sign change of OLR - absorbed (stable low-T branch),
-  // then bisect. Returns null if there is none on the scanned range.
+  // Stable equilibria of OLR - absorbed, which are the upward crossings as T
+  // rises. With liquid, the sea-ice fraction is its equilibrium value at each
+  // trial T, so the search sees the same ice albedo the steps use. Returns the
+  // warmest crossing, or null if there is none on the scanned range.
   function findEquilibrium(base, c, geo, Seff, liquid, tLo, tHi, nScan) {
     const f = (T) => {
-      const F = fluxes(base, c, geo, T, Seff, liquid);
+      const sT = liquid ? Object.assign({}, base, { iceFraction: iceEquilibrium(T) }) : base;
+      const F = fluxes(sT, c, geo, T, Seff, liquid);
       return F.olr - F.absorbed;
     };
+    let found = null;
     let prevT = tLo;
     let prevF = f(prevT);
     for (let i = 1; i <= nScan; i++) {
@@ -440,17 +484,19 @@ const ClimateModel = (function () {
           const m = 0.5 * (a + b);
           if (f(m) < 0) a = m; else b = m;
         }
-        return 0.5 * (a + b);
+        found = 0.5 * (a + b);
       }
       prevT = T;
       prevF = fv;
     }
-    return null;
+    return found;
   }
 
-  // Initial state at radiative equilibrium for the config (or opts.Ts0).
-  // Ocean-bearing planets start wet; if no equilibrium exists (absorbed flux
-  // above the cap), the planet starts at 300 K and runs away.
+  // Initial state at radiative equilibrium for the config (or opts.Ts0). With
+  // ocean area the warmest stable equilibrium is used, so the start is on the
+  // warm branch where two exist. If there is none (absorbed flux above the cap),
+  // the planet starts at 300 K and runs away. Ice and the carbonate ratio are set
+  // consistently with the start temperature.
   function createState(config, opts) {
     const c = config;
     const geo = geometry(c);
@@ -470,11 +516,7 @@ const ClimateModel = (function () {
       liquid = wetPossible && Ts0 < CRITICAL_T;
     } else if (wetPossible) {
       const wet = findEquilibrium(base, c, geo, Seff, true, 40, CRITICAL_T, 120);
-      if (wet !== null) {
-        Ts0 = wet;
-      } else {
-        Ts0 = 300;
-      }
+      Ts0 = wet !== null ? wet : 300;
       liquid = true;
     } else {
       const dry = findEquilibrium(base, c, geo, Seff, false, 40, 2000, 196);
@@ -482,8 +524,9 @@ const ClimateModel = (function () {
     }
     base.Ts = Ts0;
     base.Td = Ts0;
-    base.iceFraction = iceEquilibrium(Ts0);
     base.oceanDepthM = liquid ? c.waterOED_m : 0;
+    base.iceFraction = liquid ? iceEquilibrium(Ts0) : 0;
+    base.last.carbonRatio = carbonRatio(base, c, geo, liquid);
     return base;
   }
 
@@ -494,8 +537,8 @@ const ClimateModel = (function () {
     const liquid = s.oceanDepthM > 0;
     const F = fluxes(s, c, geo, s.Ts, Seff, liquid);
     const env = F.env;
-    const f = s.iceFraction;
-    const fe = iceEquilibrium(s.Ts);
+    const f = liquid ? s.iceFraction : 0;
+    const fe = liquid ? iceEquilibrium(s.Ts) : 0;
     const fStrat = stratFraction(s.Ts);
     const ratio = s.last && s.last.carbonRatio !== undefined ? s.last.carbonRatio : 1;
     const evap = s.last && s.last.evapWm2 ? s.last.evapWm2 : 0;
@@ -532,13 +575,19 @@ const ClimateModel = (function () {
       radiusRel: geo.R,
       massRel: c.massEM,
       rotationDays: c.rotationDays,
-      luminosityRel: c.evolveStar ? luminosityRelative(c.ageGyr + s.tYears * 1e-9) : c.S,
+      // Effective stellar flux relative to present Earth, the value the physics uses.
+      luminosityRel: Seff,
       lag: lag,
       flags: {
         hasLiquidWater: liquid,
         hasIce: liquid && f > 0.02,
         moistGreenhouse: liquid && s.Ts >= 330,
-        runawayActive: liquid && F.g >= F.cap && F.absorbed >= F.cap,
+        // Liquid present and either absorbed sunlight above the cap (no
+        // equilibrium exists), or OLR at the cap with absorbed sunlight within
+        // RUNAWAY_TOL of it (the cap-limited edge). The tolerance stops the
+        // label from flipping on differences of a few hundredths of a W m^-2.
+        runawayActive: liquid && (F.absorbed > F.cap + RUNAWAY_TOL
+          || (F.g >= F.cap && F.absorbed >= F.cap - RUNAWAY_TOL)),
         hot: s.Ts > 373.15,
         hasSteamAtmosphere: !liquid && env.pH2O > 0.1
       }
@@ -629,7 +678,8 @@ const ClimateModel = (function () {
 
   // ---- Clock -------------------------------------------------------------
   // Speed tiers: sub-step (years) as a pure function of speed (years/s).
-  // Sub-steps per frame at 60 Hz stay at or below 500 across the tiers.
+  // Clock steps per 60 Hz frame stay at or below 500 across the tiers. Each
+  // Clock step is one or more internal sub-steps (see step).
   const TIER_SPEED = [0, 30, 300, 3e3, 3e4, 3e5, 3e6, 3e7, 3e8];
   const TIER_DT = [0.5, 1, 5, 25, 100, 500, 2000, 1e4, 5e4];
 
@@ -645,7 +695,9 @@ const ClimateModel = (function () {
     create: function () {
       return { acc: 0 };
     },
-    // Accumulates simulated years; runs whole sub-steps. Returns the count.
+    // Accumulates simulated years and runs whole sub-steps. Returns the count.
+    // Time not yet run stays in clock.acc, so nothing is discarded: a call that
+    // hits MAX_STEPS_PER_CALL leaves the rest for the next call.
     advance: function (clock, wallSeconds, yearsPerSecond, state, config) {
       const wall = clamp(wallSeconds, 0, MAX_FRAME_S);
       const dt = stepSizeForSpeed(yearsPerSecond);
@@ -656,7 +708,6 @@ const ClimateModel = (function () {
         clock.acc -= dt;
         n++;
       }
-      if (clock.acc > dt) clock.acc = dt;
       return n;
     }
   };
@@ -687,7 +738,7 @@ const ClimateModel = (function () {
       config: withConfig({ landFraction: 0.6, waterOED_m: 300, evolveStar: false }) },
     { id: 'waterworld', name: 'Waterworld',
       blurb: 'Almost no land and a deep global ocean. Without land, weathering is nearly absent.',
-      config: withConfig({ landFraction: 0.005, waterOED_m: 10000, evolveStar: false }) },
+      config: withConfig({ landFraction: 0.01, waterOED_m: 10000, evolveStar: false }) },
     { id: 'slow_rotator', name: 'Slow rotator (30 days)',
       blurb: 'A 30-day rotation adds a substellar cloud deck that raises albedo and cools the surface.',
       config: withConfig({ rotationDays: 30, S: 1.3, evolveStar: false }) },

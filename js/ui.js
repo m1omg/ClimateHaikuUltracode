@@ -294,7 +294,9 @@ const ClimateUI = (function () {
     setText(simTimeEl, RD.formatYears(state.tYears));
     setText(pauseBtn, run.paused ? 'Play' : 'Pause');
     const idx = String(nearestSpeedIndex(run.yearsPerSecond));
-    if (document.activeElement !== speedSel && speedSel.value !== idx) speedSel.value = idx;
+    // Synced even while focused: a select has no drag to fight, and a focused select
+    // must show the speed that keys such as plus and minus have just set.
+    if (speedSel.value !== idx) speedSel.value = idx;
     const slow = !run.paused && run.ratio !== undefined && run.ratio < 0.97;
     setText(ratioEl, slow
       ? 'Running at ' + Math.round(run.ratio * 100) + '% of the selected speed. This device cannot keep up.'
@@ -402,7 +404,7 @@ const ClimateUI = (function () {
     setText(hudEls.absorbed, diag.absorbedWm2.toFixed(0) + ' ' + SUP_MINUS_2);
     setText(hudEls.olr, diag.olrWm2.toFixed(0) + ' ' + SUP_MINUS_2 + ' (cap ' + diag.olrCapWm2.toFixed(0) + ')');
     setText(hudEls.net, (diag.netWm2 >= 0 ? '+' : MINUS) + Math.abs(diag.netWm2).toFixed(1) + ' ' + SUP_MINUS_2);
-    setText(hudEls.escape, RD.formatYears(diag.hydrogenLossTimescaleGyr * 1e9) +
+    setText(hudEls.escape, escapeTimeText(diag.hydrogenLossTimescaleGyr) +
       ' (stratospheric H2O ' + diag.stratosphericH2O.toExponential(1) + ')');
 
     const labels = badgeLabels(diag, config);
@@ -427,6 +429,15 @@ const ClimateUI = (function () {
       }
       setText(ref.status, status);
     });
+  }
+
+  // Hydrogen-loss time in a readable form: three significant figures, Myr below 1 Gyr,
+  // and a cap label above 100 Gyr (the value is set by an assumed escape rate).
+  function escapeTimeText(gyr) {
+    if (!isFinite(gyr)) return '–';
+    if (gyr > 100) return 'over 100 Gyr';
+    if (gyr < 1) return RD.formatYears(gyr * 1e9);
+    return String(Number(gyr.toPrecision(3))) + ' Gyr';
   }
 
   function update(diag, state, config, history, run) {

@@ -211,7 +211,8 @@ const ClimateRender = (function () {
     for (let i = 0; i < n; i++) crack[i] = clamp(1 - Math.abs(detail[i] - 0.5) * 24, 0, 1);
     maps = {
       elev: equalize(fbmField(SEED_TERRAIN, 6, 5)),
-      cloud: equalize(fbmField(SEED_CLOUD, 8, 4)),
+      // Cloud features are finer than the continents, so cloud cover does not read as land.
+      cloud: equalize(fbmField(SEED_CLOUD, 24, 6)),
       detail: detail,
       crack: crack,
       SR: new Float32Array(n), SG: new Float32Array(n), SB: new Float32Array(n),
@@ -232,6 +233,10 @@ const ClimateRender = (function () {
   function emitLevel(Ts) {
     return clamp((Ts - 950) / 500, 0, 1);
   }
+  // 0..1 warmth of the surface, from 300 K (cool) to 360 K (warm): shifts ocean colour.
+  function warmLevel(Ts) {
+    return clamp((Ts - 300) / 60, 0, 1);
+  }
 
   // Colour maps for the current surface. Ocean shades from turquoise (shallow) to navy
   // (deep). Low ocean fraction tints land toward desert. Ice is a latitude cap whose
@@ -246,6 +251,7 @@ const ClimateRender = (function () {
     const dense = diag.pCO2Bar > 5;
     const desert = liquid ? clamp((0.6 - oceanF) / 0.4, 0, 1) : 0;
     const depthF = clamp(diag.oceanDepthM / 3000, 0, 1);
+    const warm = warmLevel(diag.Ts);
     for (let j = 0; j < TEX_H; j++) {
       const lat = (0.5 - (j + 0.5) / TEX_H) * Math.PI;
       const sinLat = Math.abs(Math.sin(lat));
@@ -274,6 +280,10 @@ const ClimateRender = (function () {
           r = lerp(0.14, 0.03, depthF) * (0.94 + 0.12 * d);
           g = lerp(0.55, 0.13, depthF) * (0.94 + 0.12 * d);
           b = lerp(0.62, 0.32, depthF) * (0.94 + 0.12 * d);
+          // Hot oceans look murkier: a warm shift toward olive, from about 300 K up.
+          r = lerp(r, 0.34, 0.5 * warm);
+          g = lerp(g, 0.40, 0.5 * warm);
+          b = lerp(b, 0.22, 0.5 * warm);
           oc = 1;
         } else {
           const basin = dense ? 0.2 : 0.36;
@@ -281,13 +291,32 @@ const ClimateRender = (function () {
           g = (dense ? 0.18 : 0.26) * (0.85 + 0.3 * d);
           b = (dense ? 0.17 : 0.2) * (0.85 + 0.3 * d);
         }
-        if (iceF > 0 && sinLat + (d - 0.5) * 0.12 >= iceEdge) {
+        // The edge jitter shrinks toward the pole, where one row of texels spans all
+        // longitudes; without this the cap edge fans out in radial wedges.
+        if (iceF > 0 && sinLat + (d - 0.5) * 0.12 * Math.cos(lat) >= iceEdge) {
           r = 0.92; g = 0.96; b = 1.0; oc = 0;
         }
         const glow = emit * (0.12 + 0.9 * m.crack[t] * (0.5 + 0.5 * d));
         m.SR[t] = r; m.SG[t] = g; m.SB[t] = b;
         m.OC[t] = oc;
         m.ER[t] = glow; m.EG[t] = glow * 0.42; m.EB[t] = glow * 0.12;
+      }
+    }
+    // Near the poles one texel row spans every longitude, so nearest-texel sampling
+    // draws radial spokes. Blend each polar row toward its longitudinal mean.
+    for (let j = 0; j < TEX_H; j++) {
+      const cosLat = Math.cos((0.5 - (j + 0.5) / TEX_H) * Math.PI);
+      const w = clamp(1 - cosLat / 0.35, 0, 1);
+      if (w <= 0) continue;
+      const mean = [m.SR, m.SG, m.SB, m.OC, m.ER, m.EG, m.EB].map(function (arr) {
+        let sum = 0;
+        for (let i = 0; i < TEX_W; i++) sum += arr[j * TEX_W + i];
+        return sum / TEX_W;
+      });
+      const arrs = [m.SR, m.SG, m.SB, m.OC, m.ER, m.EG, m.EB];
+      for (let i = 0; i < TEX_W; i++) {
+        const t = j * TEX_W + i;
+        for (let a = 0; a < arrs.length; a++) arrs[a][t] = lerp(arrs[a][t], mean[a], w);
       }
     }
   }
@@ -300,6 +329,7 @@ const ClimateRender = (function () {
       Math.round(diag.oceanDepthM / 40),
       Math.round(iceCover(diag) * 60),
       Math.round(emitLevel(diag.Ts) * 30),
+      Math.round(warmLevel(diag.Ts) * 10),
       diag.pCO2Bar > 5 ? 1 : 0
     ].join('|');
     if (key !== m.key) {
@@ -436,12 +466,14 @@ const ClimateRender = (function () {
     return clamp((diag.albedo - 0.12) / 0.4, 0, 1) * (diag.flags.hasLiquidWater ? 1 : 0.6);
   }
 
-  function paintDisk(disk, diag, config, motion) {
+  function paintDisk(disk, diag, config, motion, simTime) {
     const m = surfaceMapsFor(diag, config);
     const rot = diag.rotationDays > 0 ? diag.rotationDays : 1;
-    const spin = frac(diag.tYears * DAYS_PER_YEAR / rot * motion);
-    const shift = Math.floor(spin * TEX_W);
-    const cloudShift = Math.floor(frac(spin * 0.9) * TEX_W);   // clouds drift 10% slower than the surface
+    // Rotation turns elapsed, unwrapped, from the continuous simulated time, so the
+    // spin is smooth and does not depend on how the frames fell.
+    const turns = (simTime === undefined ? diag.tYears : simTime) * DAYS_PER_YEAR / rot * motion;
+    const shift = Math.floor(frac(turns) * TEX_W);
+    const cloudShift = Math.floor(frac(turns * 0.9) * TEX_W);  // clouds drift 10% slower than the surface
     const cover = cloudCover(diag);
     const cthr = 1 - cover;
     const d = disk.img.data;
@@ -469,7 +501,7 @@ const ClimateRender = (function () {
       let b = SB[t] * lf + EB[t] + s;
       if (cover > 0) {
         const tc = ro[i] + ((cb[i] + cloudShift) & TEX_MASK);
-        const ca = cover * smooth(cthr - 0.05, cthr + 0.05, CL[tc]);
+        const ca = 0.75 * cover * smooth(cthr - 0.05, cthr + 0.05, CL[tc]);
         if (ca > 0) {
           const cl = 0.1 + 0.9 * lf;
           r += (cl - r) * ca;
@@ -561,9 +593,20 @@ const ClimateRender = (function () {
     }
 
     // Disk: shaded surface, ocean glint, lava glow and clouds, painted per device pixel.
-    paintDisk(L.disk, diag, config, motion);
+    paintDisk(L.disk, diag, config, motion, opts.simTime);
     const box = L.disk.side / dpr;
     c.drawImage(L.disk.canvas, cx - L.disk.half / dpr, cy - L.disk.half / dpr, box, box);
+  }
+
+  // Text with a background-coloured outline, so a label stays legible where a curve passes.
+  function haloText(c, text, x, y, halo) {
+    c.save();
+    c.lineJoin = 'round';
+    c.lineWidth = 3;
+    c.strokeStyle = halo;
+    c.strokeText(text, x, y);
+    c.restore();
+    c.fillText(text, x, y);
   }
 
   // ---- Energy-balance diagram --------------------------------------------
@@ -688,7 +731,7 @@ const ClimateRender = (function () {
         c.fillStyle = pal.ink;
         c.textAlign = 'left';
         c.textBaseline = 'bottom';
-        c.fillText('equilibrium ' + Math.round(mk.T) + ' K', x + 8, y - 7);
+        haloText(c, 'equilibrium ' + Math.round(mk.T) + ' K', x + 8, y - 7, pal.panel);
       }
     });
 
@@ -708,10 +751,10 @@ const ClimateRender = (function () {
     c.textAlign = 'right';
     c.textBaseline = 'bottom';
     c.fillStyle = pal.absorbed;
-    c.fillText('absorbed ' + absorbed.toFixed(0), m.l + pw - 2, yOf(absorbed) - 3);
+    haloText(c, 'absorbed ' + absorbed.toFixed(0), m.l + pw - 2, yOf(absorbed) - 3, pal.panel);
     c.fillStyle = pal.cap;
     c.textAlign = 'left';
-    c.fillText('cap 282', m.l + 4, yOf(CAP_BASE) - 3);
+    haloText(c, 'cap 282', m.l + 4, yOf(CAP_BASE) - 3, pal.panel);
     let lx = m.l;
     const legend = [['OLR', pal.olr, []], ['absorbed', pal.absorbed, [6, 4]], ['cap', pal.cap, [2, 3]]];
     c.textAlign = 'left';
