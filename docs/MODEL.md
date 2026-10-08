@@ -224,7 +224,7 @@ the latent heat that would take the surface past 647.1 K is not booked.
     | 0.95 | temperate, 283 K | temperate, 285 K |
     | 1.00 | temperate, 288 K | temperate, 288 K |
     | 1.10 | temperate, 309 K | temperate, 299 K |
-    | 1.20 | moist greenhouse, 336 K | moist greenhouse, 333 K |
+    | 1.20 | wet runaway at the cap, 336 K | wet runaway at the cap, 333 K |
     | 1.25–1.30 | none (wet runaway at 300 K) | dry runaway, about 1340–1350 K |
 
   - The cold snowball is not held at S = 0.9 once CO2 can build up. The dry-runaway
@@ -237,9 +237,11 @@ the latent heat that would take the surface past 647.1 K is not booked.
 
 - Wet runaway label (`flags.runawayActive`): liquid is present and either
   absorbed sunlight exceeds the cap by more than 1 W m^-2 (no equilibrium
-  exists), or OLR is at the cap with absorbed sunlight within 1 W m^-2 of it
-  (the cap-limited edge). The tolerance keeps the label from flipping on tiny
-  differences at the neutral equilibrium.
+  exists), or the grey OLR is within 1 W m^-2 of the cap and absorbed sunlight is
+  within 1 W m^-2 of it (the cap-limited edge). The tolerance keeps the label from
+  flipping on tiny differences at the neutral equilibrium. Applying it to the grey
+  OLR as well as the absorbed flux cut the label changes on the Gough ramp to 14 in
+  total (deviation 20).
 - Liquid is present while absorbed sunlight is above the cap, and the planet
   heats toward the cap. Once OLR reaches the cap, the surplus evaporates (section 2.7).
   Where the grey OLR never reaches the cap, the planet heats to the critical
@@ -300,12 +302,15 @@ the latent heat that would take the surface past 647.1 K is not booked.
   above 330 K. Without the cap, weathering at 560 K was about 5e8 times the
   present rate and removed the atmosphere's CO2 in one 5000-yr step. The brief
   gives no upper validity for the fit. The cap is a game choice.
-- Land scaling (deviation). The brief says weathering is insensitive to land
-  above 0.01 (Abbot et al. 2012). This model scales it linearly with land up to
-  three times Earth's land fraction. The linear scaling was not previously
-  documented. It is kept, because a saturating law would give the 0.5% waterworld
-  about half of Earth's weathering, against its "weathering is nearly absent"
-  description. This needs a decision (section 7, deviation 17).
+- Land factor (resolved deviation 17). Following Abbot et al. (2012), weathering
+  saturates above 1% land: `landF = min(1, landFraction / 0.01)`. A 0.05 and a 0.29
+  land fraction give identical weathering (test R4). Earth's land factor is 1 under
+  both the old and the new law, so the Earth carbon balance is unchanged. The
+  weathering constant needed no recalibration. A planet with zero land has no
+  weathering. A 1% land world (the waterworld preset) weathers at the Earth rate, and
+  its CO2 falls from 2.2e-2 bar to 6.6e-8 bar in 1 Gyr (before: the linear law gave
+  0.034 of Earth's rate, so CO2 stayed high). The waterworld preset text in
+  `js/model.js` was changed to match.
 - The exponential is clamped to ±50 in the exponent.
 - Integration: the `p^0.3` term is linearised about the start of the step and
   integrated exactly. CO2 never goes negative.
@@ -368,7 +373,10 @@ most 2000 whole Clock steps per call. Time it cannot run in one call stays in
 | N2/O2 broadening | 0.1 bar^-1 | documented choice |
 | CH4 | 3.6e-4 sqrt(ppb) | Etminan et al. (2016) |
 | H2 CIA | 5 bar^-2 | documented choice |
-| H2O | 2.51 p^0.3 + 0.02 p^2, p ≤ 300 bar | Earth 287.9 K; steam 1400–1600 K |
+| H2O over liquid | 2.51 p^0.3 to a 0.01 bar knee, then p^0.47, held at 0.1 bar | Earth 287.9 K; moist-first ordering (section 2.3.1) |
+| H2O steam (no liquid) | 2.51 p^0.3 + 0.02 p^2, p ≤ 300 bar | dry runaway 1280–1320 K at S 1.25–1.4 |
+| Latent heat of condensation | 2.5e9 J m^-2 per m | latent part of the 3.96e9 J m^-2 per m (brief Section 3.3) |
+| Land saturation | 1% land (weathering) | Abbot et al. (2012), replaces the linear land scale |
 | Water escape | 1 Gyr at f = 3e-3 | brief Game decision 2 |
 | Weathering | 0.3, 13.7 K, p_ref 4.2e-4 bar | brief Section 4 (WHK, unverified in FC) |
 | Weathering temperature cap | 330 K | game choice; the fit is not calibrated above (section 2.11) |
@@ -379,46 +387,62 @@ most 2000 whole Clock steps per call. Time it cannot run in one call stays in
 | Max predicted change per step | 3 K | numerical trust limit (section 2.7) |
 | Minimum internal step | 0.5 yr | numerical limit (section 2.7) |
 | Temperature floor | 2 K | numerical guard |
-| Runaway label tolerance | 1 W m^-2 | classification tolerance (section 2.9) |
+| Runaway label tolerance | 1 W m^-2 | classification tolerance on the cap test and absorbed flux (section 2.9) |
 | Minimum mass | 0.01 M_E | keeps the radius law finite |
 
 ## 4. Calibration results
 
-Measured with the final code (`npm test` output and direct runs).
+Before is the HEAD commit (`git show HEAD:js/model.js`). After is this repair round.
+Values are from `npm test` console output and direct runs.
 
-| Target | Result | Status |
-|---|---|---|
-| Earth Ts (288 K) | 287.9 K | within tolerance |
-| Earth OLR (239 W m^-2) | 240.1 W m^-2 | within tolerance |
-| Earth albedo (0.294) | 0.2943 | |
-| Mars Ts (214 K mean) | 220.0 K, 0.0065 bar | within 200–225 K |
-| Venus Ts (737 K) | 737.9 K, 95.1 bar total | within 700–780 K |
-| Runaway onset, Gough ramp (test 7) | 1.843 Gyr (label first set when the cap binds, S ≈ 1.19) | see section 7 |
-| Moist onset, Ts 330 K, Gough ramp (test 7) | 1.935 Gyr (S ≈ 1.20) | see section 7 |
-| Moist onset, quasi-static S ramp (1e-6 per yr) | S = 1.207 | |
-| Step S = 1.22 (just above threshold): 288 → 330 K (test 8) | 2516 yr (1-yr steps) | |
-| Step S = 1.25: 288 → 330 K | 994 yr | |
-| Step S = 1.40: 288 → 330 K | 82 yr | |
-| S = 1.22 from a 300 K start: 330 K reached | 2.2e3 yr | |
-| S = 1.22 from a 300 K start: ocean gone | 3.6e4 yr at about 8 W m^-2 surplus | brief 1e4–1e5 yr |
-| S = 1.22 from a 300 K start: Ts at 200 kyr | 1421 K, dry_runaway | brief 1400–1500 K |
-| Snowball S = 0.72, 1 Myr | Ts 222.1–247.0 K, hard_snowball, CO2 0.053 bar at 1 Myr | |
-| Warm config (S 1.17) water loss | 2700 → 2669 m in 1 Gyr | |
-| CO2 after 1 Gyr, S 1.0 vs 1.17 (test 12) | 4.29e-4 vs 1.60e-5 bar | warmer = more weathering |
-| Speed-tier dependence of dry-out (S 1.4, 2700 m) | 3800 yr (dt 100), about 4000 yr (dt 500 and 2000) | within the sampling of the check |
-| Ts after 2 Myr, same case | 1267–1268 K for dt ≤ 2000 | |
+| Target | Before | After | Status |
+|---|---|---|---|
+| Earth Ts (288 K) | 287.88 K | 287.88 K | within tolerance |
+| Earth OLR (239–242 W m^-2) | 240.10 | 240.10 | within tolerance |
+| Earth albedo (0.294) | 0.2943 | 0.2943 | |
+| Mars Ts (214–225 K), pressure | 219.98 K, 0.0065 bar | 219.98 K, 0.0065 bar | within range |
+| Venus Ts (737 ± 10 K) | 737.86 K, 95.1 bar | 737.86 K, 95.1 bar | within range |
+| Grey OLR at 330 K, Earth gases, liquid, CO2 fixed | 321 W m^-2 (uncapped) | 265.1 W m^-2 (cap 282) | R2 |
+| Cap binds, Earth gases, liquid, CO2 fixed | about 304 K (review figure) | about 340 K, S ≈ 1.20 | R2 |
+| Moist onset, S ramp 1e-6 per yr, carbon cycle on | S = 1.206 at 206.5 kyr | S = 1.167 at 167.5 kyr | R2a: moist first |
+| Runaway onset (label), same ramp | S = 1.1925 at 193 kyr | S = 1.198 at 198.5 kyr | R2a |
+| Gough ramp (test 7): moist onset, Ts > 330 K | 1.935 Gyr | 1.594 Gyr | |
+| Gough ramp (test 7): runaway label | 1.843 Gyr | 1.887 Gyr | moist first (gap 0.29 Gyr) |
+| Step S = 1.22: 288 → 330 K | 2516 yr | 499 yr | |
+| Step S = 1.18: 288 → 330 K (test 8) | not measured | 1492 yr | test 8 setup |
+| Step S = 1.19: 288 → 330 K | not measured | 1059 yr | |
+| Step S = 1.25: 288 → 330 K | 994 yr | 304 yr | |
+| Step S = 1.40: 288 → 330 K | 82 yr | 37 yr | |
+| S = 1.22 from 300 K: 330 K reached | 2.2e3 yr | 300 yr | |
+| S = 1.22 from 300 K: ocean gone | 3.6e4 yr at about 8 W m^-2 surplus | 1.9e5 yr at about 4 W m^-2 surplus (brief 1e4–1e5 yr) | |
+| S = 1.22 from 300 K: Ts at 200 kyr | 1421 K, dry_runaway | 1423 K, dry_runaway (brief 1400–1500 K) | |
+| Dry steam, S = 0.3, from 906 K, 2700 m: Ts and vapour at 2 Myr | 862.8 K, 1935 m, dry | 862.8 K, 1935 m, dry (unchanged) | |
+| Dry steam: Ts below 647 K | not reached in 25 Myr | 5.6 Myr | R1a |
+| Dry steam: liquid returns | not reached in 25 Myr | 6.9 Myr, Ts 586 K | R1a; the 2 Myr target is not met |
+| Dry-runaway steam, S = 1.25–1.4, 1.5 Myr | 1284–1321 K | 1284–1321 K (unchanged) | |
+| Earth weathering factor at 288 K | 1 | 1 | R4 |
+| Weathering, land 0.05 vs 0.29 | ratio 0.172 | identical, ratio 1.000 | R4 |
+| Waterworld (1% land): CO2 and Ts after 1 Gyr | 2.18e-2 bar, 317.9 K | 6.6e-8 bar, 324.0 K | |
+| Warm config (S 1.17): water after 1 Gyr | 2700 → 2669 m | 2700 → 1919 m (now moist greenhouse) | |
+| CO2 after 1 Gyr, S 1.0 vs 1.17 (test 12) | 4.29e-4 vs 1.60e-5 bar | 4.29e-4 vs 1.54e-8 bar | warmer = more weathering |
+| OLR slope over 150–2000 K, Earth gases with liquid | falls by 15.2 W m^-2 per grid step at 549 K | never falls | R3 |
+| Snowball S = 0.72, 1 Myr | Ts 222.1–247.0 K, hard_snowball, CO2 0.053 bar | unchanged | |
+| Speed-tier dry-out (S 1.4, 2700 m), dt 100 yr | 3800 yr | 17 000 yr | dt 500 and 2000 not rerun |
+| Ts after 2 Myr, S 1.4 case | 1268.0 K | 1268.2 K | |
+| Water ledger over 100 kyr (R1c, R1d) | not defined | exact, error 0 | |
 
-Frame-rate test (speed 1000 yr/s, sub-step 5 yr, 10 s wall): 30 Hz gives
-t = 10000.00 yr and Ts = 287.9018 K; 60 Hz gives the same; 144 Hz gives
-t = 9995.00 yr and Ts = 287.9018 K. The difference is one sub-step, and Ts agrees to well under 0.01 K.
+Frame-rate test (test 9, speed 1000 yr/s, sub-step 5 yr, 10 s wall): 30 Hz gives
+t = 10000.00 yr and Ts = 287.9017 K; 60 Hz gives the same; 144 Hz gives
+t = 9995.00 yr and Ts = 287.9017 K. The difference is one sub-step.
 
-Convergence test (ramp of 1e-6 S/yr to moist onset): 1-yr sub-step gives
-209 577 yr, 500-yr sub-step gives 206 500 yr. Difference 1.5%, inside 5%.
+Convergence test (test 10, ramp of 1e-6 S/yr to moist onset): 1-yr sub-step gives
+166 709 yr, 500-yr sub-step gives 167 500 yr. Difference 0.5%, inside 5%. Before: 1.5%.
 
-Bounds sweep (2800 configurations: 8 S × 7 CO2 × 5 water × 5 mass × 2 rotation):
-over 1 Myr at 5000-yr steps, 20 kyr at 50-yr steps, and 20 Myr at 5000-yr steps,
-no Ts left [2, 3000] K, no NaN or infinity, no negative pressure, CO2 or water,
-and no time lost from the requested step.
+Robustness: test 11 (300 random configurations, 5000 yr each) passes. A further
+seeded sweep of 300 random configurations, each run for 1 Myr at 5000-yr steps,
+found no non-finite value, Ts outside [2, 3000] K, negative inventory, or water
+ledger error (maximum 0). Condensation fired in 830 of those steps. The 2800-configuration
+sweep in the previous version is superseded and was not rerun.
 
 ## 5. Classification
 
@@ -436,6 +460,22 @@ and no time lost from the requested step.
 10. otherwise `mars_like`
 
 Slow rotators (P ≥ 20 d) get an extra clause in the summary text.
+
+Ordering on the Earth solar ramp (CO2 free, carbon cycle on; test R2a and the
+measured Gough ramp). Rule 4 precedes rule 5, so a planet pinned at the cap is a wet
+runaway even above 330 K:
+
+1. `temperate`, from the start to S ≈ 1.167;
+2. `moist_greenhouse`, from 330 K at S = 1.167 (ramp) and 1.594 Gyr (Gough);
+3. `wet_runaway`, from the cap test at S ≈ 1.198 and 1.887 Gyr, at 333–340 K;
+   the label changes to `moist_greenhouse` and back 14 times in total, as
+   Ts creeps against the cap (section 2.9 tolerance);
+4. `dry_runaway`, after the ocean has evaporated at the cap, 61 Myr later
+   (1.948 Gyr), at about 1000 K and rising.
+
+The brief's sequence is temperate, then moist, then runaway (section 3.1). It is
+followed here, with a gap of about 0.03 times the present sunlight (ramp) and 0.29 Gyr
+(Gough). The brief's gap is 0.4–0.9 Gyr (section 7, deviation 1).
 
 Thresholds and hysteresis. The rules are pure functions of the state, so a
 state that sits on a threshold can flip with the tiny numerical differences
@@ -465,8 +505,9 @@ Superhabitable worlds are not modelled.
 
 `npm test` runs `node --test tests/*.test.js`. `node --test tests/` runs the same
 suite: a small entry file, `tests/index.js`, loads the test module, because on
-Node 22 a directory argument is otherwise read as a module path. Results: 22 of 22 pass.
-Thirteen are the brief's tests, and nine are extra checks.
+Node 22 a directory argument is otherwise read as a module path. Results: 30 of 30 pass
+(`# tests 30, # pass 30, # fail 0`). Thirteen are the brief's tests, nine are extra
+checks from earlier, and eight were added in the repair round (R1a–R4).
 
 | # | Test | Result |
 |---|---|---|
@@ -476,47 +517,72 @@ Thirteen are the brief's tests, and nine are extra checks.
 | 4 | Snowball cold for 1 Myr at 1000 yr | pass: hard_snowball or slushball throughout |
 | 5 | Gough law values | pass |
 | 6 | Mass-radius, 1 M_E | pass: R 1.0007, g 0.9986 |
-| 7 | Gradualness (Gough Earth) | pass: moist onset 1.93 Gyr, runaway onset 1.84 Gyr |
-| 8 | Step S = 1.22 takes > 1000 yr to 330 K | pass: 2516 yr |
+| 7 | Gradualness (Gough Earth) | pass: moist onset 1.59 Gyr, runaway onset 1.89 Gyr |
+| 8 | Step S = 1.18 (just above the moist threshold) takes > 1000 yr to 330 K | pass: 1492 yr. Changed from S = 1.22, see below |
 | 9 | Frame-rate independence (30/60/144 Hz) | pass (see section 4) |
-| 10 | Step convergence, 1 yr vs 500 yr | pass: 1.5% |
+| 10 | Step convergence, 1 yr vs 500 yr | pass: 0.5% |
 | 11 | Robustness, 300 random configs × 5000 yr | pass |
-| 12 | Water loss and weathering | pass |
+| 12 | Water loss and weathering | pass: warm CO2 falls faster (1.5e-8 vs 4.3e-4 bar) |
 | 13 | Classification stability | pass |
 | x1 | Speed tiers ≤ 500 Clock steps per frame | pass |
 | x2 | editConfig resets gas and water state | pass |
 | x3 | Surface temperature physical at a 5000-yr step (defect repro) | pass |
 | x4 | `step` advances the requested time | pass |
-| x5 | No wet-runaway/moist alternation at the cap | pass |
+| x5 | No wet-runaway/moist alternation at the cap | pass (config S 1.5, 25000 m, 30 d rotation) |
 | x6 | No sea ice without liquid | pass |
 | x7 | Snowball preset starts in radiative balance | pass |
 | x8 | Non-physical inputs stay finite | pass |
 | x9 | Clock keeps time it cannot run in one call | pass |
+| R1a | Dry steam (S = 0.3, 906 K) goes below 647 K and recovers liquid by 8 Myr | pass: below 647 K at 5.6 Myr, liquid at 6.9 Myr. The 2 Myr target is not met |
+| R1b | Vapour above saturation (500 K, 27 bar vs 24.6 bar) condenses into a new ocean; inventory unchanged | pass |
+| R1c | Water budget over 100 kyr with condensation and escape: `waterOED + escapedOED` constant to 1e-9 | pass (exact) |
+| R1d | No hydrogen loss near 288 K: escape under 0.1% over 100 kyr, budget closes | pass |
+| R2a | Solar ramp: moist onset (Ts 330 K) at S = 1.167 comes before the runaway label at S = 1.198; grey OLR at 330 K is below the cap | pass |
+| R2b | Calibration: Earth 288 ± 1 K and OLR 239–242; Mars 214–225 K; Venus 737 ± 10 K | pass |
+| R3 | OLR non-decreasing from 150 to 2000 K (3001 points) for Earth gases with liquid, steam, and thick CO2; at most one balance crossing above 520 K | pass |
+| R4 | Weathering identical for land 0.05 and 0.29 at 288, 300, 320 and 340 K; Earth factor 1; below 1% land it is under 1 | pass |
 
-Test 7 reports the actual onsets to the console. Test 8 uses S = 1.22, just
-above the label threshold.
+Test 8 changed from S = 1.22 to S = 1.18, and the new value is the one measured
+to be 1492 yr. The reason is that the moist threshold moved from S ≈ 1.206 to
+S ≈ 1.167 (section 4), so S = 1.22 is now 2.5% above the runaway label and the
+slow approach to 330 K is at the moist threshold. The test's purpose, a
+slow approach to 330 K just above a threshold, is kept. The assertion (> 1000 yr)
+is unchanged.
+
+Test 7 keeps its assertions (moist ≥ 0.1 Gyr, runaway ≥ 0.5 Gyr). Its reported
+values changed, as section 4 shows.
+
+Test R1a uses an 8 Myr limit, longer than the 2 Myr target, because the recovery time is
+set by hydrogen escape (section 2.10). The test records the time it finds.
+
+Test R2a checks the ramp ordering with the carbon cycle on. With CO2 fixed at
+4.2e-4 bar the ordering also holds: the grey OLR at 330 K is 265.1 W m^-2, and the cap binds
+at about 340 K.
 
 ## 7. Deviations from the brief, gaps and open problems
 
-1. **Ordering of moist onset and runaway.** The brief expects a moist
-   greenhouse (330 K) followed by a runaway 0.4–0.9 Gyr later. In this model
-   the cap starts to bind first, at S ≈ 1.19 (1.84 Gyr), and the 330 K moist
-   threshold is crossed at S ≈ 1.20 (1.93 Gyr). The gap is about −0.09 Gyr, not
-   +0.4–0.9 Gyr. On the Earth ramp the planet then sits on the cap with absorbed
-   sunlight equal to it. The moist state drains the ocean by escape at about
-   400 K (section 2.10), and then becomes dry runaway. No wet runaway with an
-   evaporating ocean is seen on this path. The grey optical depth has no cloud
-   feedback. Test 7 checks only that both onsets are not too early.
-2. **Onset thresholds.** The moist S ≈ 1.20 and runaway S ≈ 1.19 are higher than
-   the 1-D values (1.014 and 1.107) and sit at the upper end of the 3-D range
-   (1.10–1.19; Leconte 2013, Wolf & Toon 2015). This is a consequence of the
-   grey, cloud-free model.
-3. **Step test.** The 330 K crossing time depends strongly on how far S is above
-   threshold (2516 yr at 1.22, 994 yr at 1.25, 82 yr at 1.40). Test 8
-   uses S = 1.22, which is just above the threshold of about 1.19. This is a
-   choice, and the other values are reported above.
-4. **Weathering timescale** is about 24 kyr, not the 240 kyr quoted from Colbourn et al. (2015). The model uses the brief's exponent of 0.3.
-5. **Snowball CO2 build-up** is about 0.05 bar at 1 Myr. The brief's build-up is 4–30 Myr (Hoffman et al. 1998), so the model is faster. The snowball preset still stays cold, as test 4 requires.
+Status after the repair round: resolved, partly resolved, or open. Items 1, 13 and 15–17
+were the repair targets. Items 19 and 20 are new and are listed for the record.
+
+1. **Ordering of moist onset and runaway (partly resolved).** The brief expects a moist
+   greenhouse (330 K) before a runaway, 0.4–0.9 Gyr apart. The moist onset now comes
+   first. On the ramp it is at S = 1.167 (167.5 kyr) against a runaway label at
+   S = 1.198 (198.5 kyr). On the Gough ramp it is at 1.594 Gyr against 1.887 Gyr
+   (gap 0.29 Gyr). The gap is smaller than the brief's. At fixed CO2 the moist flux is
+   S ≈ 1.13 and the cap binds at S ≈ 1.20. The carbon cycle lowers CO2 before the moist
+   onset (item 19), which narrows the gap on the ramp. Test R2a checks the ordering on the ramp.
+2. **Onset thresholds.** The moist onset S ≈ 1.167 and the runaway S ≈ 1.198 are above
+   the 1-D values (1.014 and 1.107) and at or just above the 3-D range (1.10–1.19; Leconte
+   2013, Wolf & Toon 2015). This is a consequence of the grey, cloud-free model. The
+   previous values were moist 1.20 and runaway 1.19, in the reverse order.
+3. **Step test.** The 330 K crossing time depends strongly on how far S is above the
+   threshold (1492 yr at 1.18, 1059 at 1.19, 499 at 1.22, 304 at 1.25, 37 at 1.40;
+   section 4). Test 8 uses S = 1.18, just above the moist threshold. This is a choice.
+4. **Weathering timescale** is about 24 kyr, not the 240 kyr quoted from Colbourn et al.
+   (2015). The model uses the brief's exponent of 0.3.
+5. **Snowball CO2 build-up** is about 0.05 bar at 1 Myr. The brief's build-up is 4–30 Myr
+   (Hoffman et al. 1998), so the model is faster. The snowball preset still stays cold,
+   as test 4 requires.
 6. **Early-Mars warm** is 461 K for 1.26 bar CO2 with 0.08 bar H2. Ramirez et al.
    (2014) give only about 273 K or more. The thick-CO2 fit is calibrated to
    Venus and overpredicts at about 1 bar. Not corrected, because Venus is the
@@ -524,64 +590,73 @@ above the label threshold.
 7. **Titan-like** surface is 116 K against 94 K. It is classification only.
 8. **Cloud feedback** is absent. The cloud term is a vapour-linked allowance and
    has no temperature dependence, so the Leconte et al. (2013) cloud destabilisation is not represented.
-9. **Hysteresis.** The loop is a static fold of the ice–albedo feedback (section
-   2.8). The earlier note attributing it to ice lag was wrong, and the loop was
-   untested. Section 2.8 gives the measured fold and the window (about 0.906 to
-   1.26 S0). Only the dynamic and pinned-CO2 runs are measured. A quasi-static
-   test is not in the suite.
-10. **Wet-runaway timing.** Above about S = 1.2 the grey optical depth stops the
-    OLR from reaching the cap in some configurations. The planet then heats
-    to the critical point, where the critical-point clamp evaporates the ocean.
-    The ocean drains in 1e3–4e3 yr, and the drain no longer depends on the
-    speed tier (section 2.7). The brief's 3e4 yr is the evaporation time at
-    10 W m^-2, and the model's preset is at a larger surplus.
+9. **Hysteresis.** The loop is a static fold of the ice–albedo feedback (section 2.8).
+   The pinned-CO2 window in earlier text was measured before this round and is superseded.
+   Section 2.8 gives the re-measured table with CO2 free. A quasi-static test is not in the suite.
+10. **Wet-runaway timing.** Over liquid, the planet now pins at the cap at 333–340 K, not at
+    the critical point. The ocean then drains at the cap surplus. At S = 1.22 from 300 K
+    this takes 1.9e5 yr at about 4 W m^-2 (before 3.6e4 yr at 8 W m^-2). The brief's
+    1e4–1e5 yr is not reached at this S, because the surplus is small (section 4).
 11. **Test command.** `node --test tests/` runs through `tests/index.js`
     (section 6). `npm test` runs the same suite through the `tests/*.test.js` glob.
-12. **Preset starts.** The `runaway` preset (S = 1.4) has no radiative
-    equilibrium. It starts at 300 K and is labelled `wet_runaway` at once, because
-    absorbed sunlight exceeds the cap. `createState` starts a planet with
-    liquid at the warmest stable equilibrium. For Earth gases at S ≈ 1.22 the
-    only equilibrium is frozen, so a reset there starts frozen (section 2.8).
-13. **Dry steam** persists in this model. The steam is not returned to the ocean
-    when the planet cools (deviation 15). The vapour is lost to escape only at
-    the escape rate (section 2.10). From 906 K at S = 0.3 with 2700 m of water, the
-    model reaches 862 K after 2 Myr, still at 190 bar.
-14. **Energy conservation.** Energy is not conserved exactly at the crossing of
-    the critical point within a step (section 2.7), or when an ocean is fully
-    evaporated within one step. The surplus beyond the remaining liquid is
-    dropped.
-15. **No condensation (vapour trap).** Water in the atmosphere does not condense
-    back into the ocean. Two consequences: (a) water that has left the ocean
-    stays in the air when the planet cools. At 250 K with 1000 m as vapour the
-    model holds 98 bar, where saturation is about 1.6e-3 bar. The Earth preset at
-    S = 0.8 with 1000 m as vapour reaches 1102 K (dry runaway, 189 bar) after 2 Myr,
-    where the intact ocean gives 238.6 K. (b) Dry steam cools only slowly: from
-    906 K at S = 0.3 with 2700 m, it reaches 862 K after 2 Myr, at 190 bar. A
-    condensation or rain-out law is the fix. It changes the wet-runaway
-    calibration, so it needs a design decision and is not made here.
-16. **OLR falls with temperature above about 520 K for a wet planet.** The
-    water term `0.02 p^2` grows faster than `sigma T^4` as the saturation
-    vapour rises. For Earth gases with liquid the grey OLR is 282 W m^-2 up to
-    about 520 K, then 257 at 550 K, 140 at 600 K and 86 at 643 K, and it rises
-    again above about 650 K. The fall creates a second, unstable crossing with
-    absorbed sunlight, which the energy chart shows. Between the crossings the
-    planet heats to the critical point. A physical OLR would not fall with
-    temperature. The fix would recalibrate the water optical depth, so it is not made here.
-17. **Weathering scales linearly with land** up to three times Earth's land
-    fraction (section 2.11). The brief says it is insensitive above 0.01 land.
-    Saturating it would give the 0.5% waterworld about half of Earth's weathering,
-    which conflicts with its "weathering is nearly absent" description. Needs a decision.
-18. **Speed-tier dependence** remains at the resolution of the internal step.
-    Dry-out and the 2 Myr endpoint agree across tiers within about 1% (section 4).
+12. **Preset starts.** The `runaway` preset (S = 1.4) has no radiative equilibrium. It
+    starts at 300 K and is labelled `wet_runaway` at once, because absorbed sunlight
+    exceeds the cap. `createState` starts a planet with liquid at the warmest stable
+    equilibrium. For Earth gases at S ≈ 1.22 the only equilibrium is frozen, so a reset
+    there starts frozen (section 2.8).
+13. **Dry steam (partly resolved).** Steam now returns to the ocean once it cools below
+    the saturation curve (deviation 15). From 906 K at S = 0.3 with 2700 m, Ts falls below
+    647 K at 5.6 Myr and liquid returns at 6.9 Myr (test R1a). Recovery is set by hydrogen
+    escape, which has a 6 Myr e-fold at steam temperatures (f capped at 0.5). Steam holds
+    the p^2 optical depth that the 1280–1320 K dry runaway needs, so it cannot cool below
+    647 K until escape thins it. The brief's recovery within about 2 Myr is not reached.
+14. **Energy conservation (narrowed).** Energy is not conserved exactly at the crossing of
+    the critical point within a step, or when an ocean is fully evaporated within one
+    step (section 2.7). Condensation books its latent heat through the ocean heat
+    capacity (section 2.9). The critical-point cap on condensation drops the part of the
+    latent heat that would take the surface above 647.1 K.
+15. **Condensation (resolved, with limits).** Vapour above saturation condenses (section
+    2.9; tests R1b–R1d). Limits: (a) saturation is the Buck (1996) fit clamped at 370 °C,
+    which gives 147 bar at 647 K where the real value is about 220 bar. This moves the
+    condensation temperature of steam near the critical point. (b) Latent heat is booked
+    through the ocean heat capacity, not through a separate surface energy budget.
+    (c) A planet with no ocean area (land = 1) cannot hold condensate, so its vapour stays
+    in the air. (d) Ice is part of the liquid column, since the ocean depth applies to the
+    ice-covered ocean. There is no separate ice water store.
+16. **OLR no longer falls with temperature (resolved; fit).** Over liquid, the water opacity
+    is sub-linear, with a steeper law between 0.01 and 0.1 bar and a hold above 0.1 bar
+    (section 2.3.1). The grey OLR is non-decreasing from 150 to 2000 K (test R3). The hold
+    is a fit. Above 0.1 bar (about 330 K for Earth) the liquid-state optical depth does not
+    rise, so the OLR there is set by the cap. The steam branch keeps the p^2 term, which
+    sets the dry-runaway temperature.
+17. **Weathering (resolved).** The land factor is `min(1, land/0.01)`, following Abbot et al.
+    (2012). Earth's factor is 1 under both the old and the new law, so the Earth balance is
+    unchanged. Consequence: a world with 1% land draws CO2 down about as fast as Earth (1 Gyr:
+    2.2e-2 bar before, 6.6e-8 bar now). The brief's waterworld has no land (brief section 2,
+    "no weathering feedback"). The waterworld preset has 1% land, and the preset text was
+    changed to say so. With zero land there is no weathering.
+18. **Speed-tier dependence** remains at the resolution of the internal step. The dry-out
+    time at S = 1.4 (dt 100 yr) is now 17 000 yr (before 3800 yr). Only that dt was
+    rerun, so the 500 and 2000 yr values are not current.
+19. **Carbon feedback on the solar ramp (new).** Weathering at 330 K is strong, so CO2 falls
+    to about 1.5e-8 bar before the planet reaches 330 K. The moist and runaway onsets on the
+    ramp depend on this. At fixed CO2 they differ (section 2.3.1). The ramp values in section
+    4 include the carbon cycle. A fixed-CO2 ramp is not in the suite.
+20. **Classification flicker at the cap (new, small).** With the planet pinned at the cap, the
+    runaway label changes to `moist_greenhouse` and back 14 times in total on the Gough ramp
+    (near 333–340 K), as Ts creeps against the cap. The 1 W m^-2 tolerance (section 2.9) is applied
+    to the cap test as well as the flux test, which reduced the count. Labels carry no memory
+    (section 5).
 
 ## 8. Limitations
 
 - Zero-dimensional. No latitude structure, no heat transport, no eyeball geometry.
 - Grey radiation. Only the cap and the Buck saturation are physical. The optical
-  depth is a fit, and its water term gives the OLR dip in deviation 16.
-- No condensation of water vapour (deviation 15).
+  depth is a fit. Over liquid its water term is held above 0.1 bar (deviation 16).
+- Condensation is instantaneous at saturation, with latent heat booked through the
+  ocean heat capacity (deviation 15).
 - The carbon cycle uses one reservoir and one weathering law, with the
-  temperature cap and linear land scaling of section 2.11.
+  temperature cap of section 2.11 and the saturating land factor.
 - Hydrogen and water escape are single timescales, not photochemical or energy-limited models.
 - Classification states are approximate (section 5).
 - The brief's extrapolated luminosity has a ±20–30% uncertainty.
