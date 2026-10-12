@@ -201,7 +201,7 @@
       const energy = M.energyCurve(state, config, ENERGY_POINTS);
       R.draw(diag, state, config, history, {
         energy: energy, ticks: ticks, motion: motion, reducedMotion: reducedMotion,
-        simTime: clockTime()
+        simTime: clockTime(), yearsPerSecond: speedYps()
       });
       U.update(diag, state, config, history, {
         paused: paused, yearsPerSecond: speedYps(), ratio: ratio

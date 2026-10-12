@@ -20,6 +20,7 @@ const ClimateRender = (function () {
   const TEX_H = 256;
   const TEX_MASK = TEX_W - 1;
   const DAYS_PER_YEAR = 365.25;
+  const VISIBLE_TURNS_PER_S = 1;    // faster spin than this cannot be followed by eye, so it is held and labelled
   const AXIS_TILT = 0.4;            // rad, spin axis tipped towards the viewer so a pole shows
   const CRITICAL_T = 647.1;         // K, liquid water cannot exist above this (model limit)
   const CAP_BASE = 282;             // W m^-2, clear-sky moist cap, drawn as a reference line
@@ -469,12 +470,24 @@ const ClimateRender = (function () {
     return Math.max(base, veil);
   }
 
-  function paintDisk(disk, diag, config, motion, simTime) {
+  // Turns per real second at this clock speed: simulated years per second times turns per year.
+  function spinRate(rotationDays, yearsPerSecond) {
+    return (yearsPerSecond || 0) * DAYS_PER_YEAR / rotationDays;
+  }
+
+  function formatTurnRate(r) {
+    return r < 1e4 ? addCommas(Math.round(r)) : r.toExponential(1).replace('e+', 'e');
+  }
+
+  function paintDisk(disk, diag, config, motion, simTime, yearsPerSecond) {
     const m = surfaceMapsFor(diag, config);
     const rot = diag.rotationDays > 0 ? diag.rotationDays : 1;
+    // Above VISIBLE_TURNS_PER_S a 60 Hz display samples the spin at random points, so it reads as
+    // flicker that changes with the refresh rate. The planet is held at phase zero instead.
+    const held = spinRate(rot, yearsPerSecond) > VISIBLE_TURNS_PER_S;
     // Rotation turns elapsed, unwrapped, from the continuous simulated time, so the
     // spin is smooth and does not depend on how the frames fell.
-    const turns = (simTime === undefined ? diag.tYears : simTime) * DAYS_PER_YEAR / rot * motion;
+    const turns = held ? 0 : (simTime === undefined ? diag.tYears : simTime) * DAYS_PER_YEAR / rot * motion;
     const shift = Math.floor(frac(turns) * TEX_W);
     const cloudShift = Math.floor(frac(turns * 0.9) * TEX_W);  // clouds drift 10% slower than the surface
     const cover = cloudCover(diag);
@@ -596,9 +609,19 @@ const ClimateRender = (function () {
     }
 
     // Disk: shaded surface, ocean glint, lava glow and clouds, painted per device pixel.
-    paintDisk(L.disk, diag, config, motion, opts.simTime);
+    paintDisk(L.disk, diag, config, motion, opts.simTime, opts.yearsPerSecond);
     const box = L.disk.side / dpr;
     c.drawImage(L.disk.canvas, cx - L.disk.half / dpr, cy - L.disk.half / dpr, box, box);
+
+    // Say why the planet is still when its true spin is too fast to see.
+    const rot = diag.rotationDays > 0 ? diag.rotationDays : 1;
+    const rate = spinRate(rot, opts.yearsPerSecond);
+    if (rate > VISIBLE_TURNS_PER_S) {
+      const pal = palette();
+      c.font = FONT;
+      c.fillStyle = pal.muted;
+      haloText(c, 'Spin too fast to draw: ' + formatTurnRate(rate) + ' turns/s', 12, H - 12, pal.panel);
+    }
   }
 
   // Text with a background-coloured outline, so a label stays legible where a curve passes.

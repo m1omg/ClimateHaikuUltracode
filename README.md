@@ -45,10 +45,12 @@ Time already passed to the clock is kept when the speed changes.
 
 History samples sit on a simulated-time grid, and the grid doubles when the
 buffer (600 samples) is full. Spin and cloud drift follow the continuous
-simulated time. At very high speeds the planet turns many times between frames,
-so its spin shows as aliasing; the phase is still exact simulated time. A
-fixed 30-per-second tick drives twinkling. Reduced motion slows spin and drift
-to a fifth and turns off twinkling. It does not change the physics.
+simulated time, but only while the true spin is slow enough to follow by eye
+(at most one turn per real second). The true spin rate is simulated years per
+second times 365.25 divided by the rotation period in days. Above that rate the
+planet is held at phase zero and the canvas says why, for example "Spin too fast
+to draw: 365 turns/s". A fixed 30-per-second tick drives twinkling. Reduced motion
+slows spin and drift to a fifth and turns off twinkling. It does not change the physics.
 
 ## Running the tests
 
